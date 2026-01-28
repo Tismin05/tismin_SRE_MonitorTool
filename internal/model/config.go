@@ -3,7 +3,8 @@ package model
 import "time"
 
 type Config struct {
-	App        Appconfig        `mapstructure:"app"`
+	App Appconfig `mapstructure:"app"`
+	// Collect    CollectorConfig  `mapstructure:"collect"`
 	Diagnostic DiagnosticConfig `mapstructure:"diagnostic"`
 	Alert      AlertConfig      `mapstructure:"alert"`
 }
@@ -24,7 +25,8 @@ type DiagnosticConfig struct {
 type AlertConfig struct {
 	Enabled          bool    `mapstructure:"enabled"`
 	CPUThreshold     float64 `mapstructure:"cpu_threshold"`
-	MemoryThreashold float64 `mapstructure:"memory_threshold"`
+	MemoryThreshold  float64 `mapstructure:"memory_threshold"`
 	DiskThreshold    float64 `mapstructure:"disk_threshold"`
 	NetworkThreshold float64 `mapstructure:"network_threshold"`
+	InodesThreshold  float64 `mapstructure:"inodes_threshold"`
 }

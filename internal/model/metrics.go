@@ -11,31 +11,37 @@ type Metrics struct {
 }
 
 type CPUStat struct {
-	Cores        int     `json:"cores"`         // CPU核心数
-	UsagePercent float64 `json:"usage_percent"` // CPU使用率，百分制
-	Load1        float64 `json:"load1"`         // 1分钟的平均负载
-	Load5        float64 `json:"load5"`         // 5分钟平均负载
-	Load15       float64 `json:"load15"`        // 15分钟平均负载
+	Cores        int       `json:"cores"`         // CPU核心数
+	UsagePercent float64   `json:"usage_percent"` // CPU使用率，百分制
+	PerCPUUsage  []float64 `json:"per_cpu_usage"` // 单个CPU的使用率
+	Load1        float64   `json:"load1"`         // 1分钟的平均负载
+	Load5        float64   `json:"load5"`         // 5分钟平均负载
+	Load15       float64   `json:"load15"`        // 15分钟平均负载
 }
 
 type MemoryStat struct {
-	Total        uint64  `json:"total"`         // 总内存
-	Free         uint64  `json:"free"`          // 空闲内存
-	Used         uint64  `json:"used"`          // 使用内存
-	SwapTotal    uint64  `json:"swap_total"`    // 交换
-	UsagePercent float64 `json:"usage_percent"` // 使用率
+	Total           uint64  `json:"total"`             // 总内存 (Bytes)
+	Free            uint64  `json:"free"`              // 空闲内存 (Bytes)
+	Used            uint64  `json:"used"`              // 已用内存 (Bytes)
+	UsedPercent     float64 `json:"used_percent"`      // 内存使用率 (百分制)
+	SwapTotal       uint64  `json:"swap_total"`        // Swap总大小 (Bytes)
+	SwapFree        uint64  `json:"swap_free"`         // Swap空闲 (Bytes)
+	SwapUsed        uint64  `json:"swap_used"`         // Swap已用 (Bytes)
+	SwapUsedPercent float64 `json:"swap_used_percent"` // Swap使用率 (百分制)
 }
 
 type DiskStat struct {
-	MountPoint       string  `json:"mount_point"`
-	Total            uint64  `json:"total"`
-	Used             uint64  `json:"used"`
-	Free             uint64  `json:"free"`
-	UsagePercent     float64 `json:"usage_percent"`
-	InodesTotal      uint64  `json:"inodes_total"`
-	InodesUsed       uint64  `json:"inodes_used"`
-	InodesFree       uint64  `json:"inodes_free"`
-	InodeUsedPercent float64 `json:"inode_used_percent"`
+	MountPoint        string  `json:"mount_point"`
+	Total             uint64  `json:"total"`
+	Used              uint64  `json:"used"`
+	Free              uint64  `json:"free"`
+	UsedPercent       float64 `json:"used_percent"`
+	InodesTotal       uint64  `json:"inodes_total"`
+	InodesUsed        uint64  `json:"inodes_used"`
+	InodesFree        uint64  `json:"inodes_free"`
+	InodesUsedPercent float64 `json:"inodes_used_percent"`
+	Read              uint64  `json:"read"`
+	Write             uint64  `json:"write"`
 }
 
 type NetStat struct {
