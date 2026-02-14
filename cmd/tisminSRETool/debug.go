@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 	"tisminSRETool/internal/collector"
 )
@@ -16,15 +19,19 @@ func main() {
 	// 注意：确保你的 internal/collector/local_MacOS.go 中定义了 MacOSCollector 结构体
 	c := &collector.MacOSCollector{}
 
-	// 2. 创建一个上下文，通常我们会设置超时，防止采集过程卡死
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 2. 根上下文 + 子上下文（超时）
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	collectCtx, cancel := context.WithTimeout(rootCtx, 5*time.Second)
 	defer cancel()
 
 	// 3. 执行采集
-	fmt.Println("📊 正在采集系统指标，请稍候...")
-	metrics, err := c.Collect(ctx)
-	if err != nil {
-		log.Fatalf("❌ 采集失败: %v", err)
+	startTime := time.Now()
+	fmt.Printf("📊 正在采集系统指标，请稍候...%s\n", startTime)
+	metrics, collectErrs := c.Collect(collectCtx)
+	if collectErrs != nil && collectErrs.HasError() {
+		log.Printf("⚠️ 采集过程中发生错误: %v", collectErrs)
 	}
 
 	// 4. 格式化输出结果

@@ -2,12 +2,13 @@ package model
 
 // Metrics 系统核心指标
 type Metrics struct {
-	CPU             CPUStat    `json:"cpu"`
-	Mem             MemoryStat `json:"memory"`
-	Disk            []DiskStat `json:"disk"`
-	Net             []NetStat  `json:"net"`
-	Host            string     `json:"host"`
-	UpdateTimestamp string     `json:"update_timestamp"`
+	CPU             CPUStat     `json:"cpu"`
+	Mem             MemoryStat  `json:"memory"`
+	Disk            []DiskStat  `json:"disk"`
+	Net             []NetStat   `json:"net"`
+	Procs           []ProcStat  `json:"procs"` // 进程信息
+	Host            string      `json:"host"`
+	UpdateTimestamp string      `json:"update_timestamp"`
 }
 
 type CPUStat struct {
@@ -22,6 +23,7 @@ type CPUStat struct {
 type MemoryStat struct {
 	Total           uint64  `json:"total"`             // 总内存 (Bytes)
 	Free            uint64  `json:"free"`              // 空闲内存 (Bytes)
+	Available       uint64  `json:"available"`         // 可用内存 (Bytes)
 	Used            uint64  `json:"used"`              // 已用内存 (Bytes)
 	UsedPercent     float64 `json:"used_percent"`      // 内存使用率 (百分制)
 	SwapTotal       uint64  `json:"swap_total"`        // Swap总大小 (Bytes)
@@ -32,6 +34,7 @@ type MemoryStat struct {
 
 type DiskStat struct {
 	MountPoint        string  `json:"mount_point"`
+	Device            string  `json:"device"`
 	Total             uint64  `json:"total"`
 	Used              uint64  `json:"used"`
 	Free              uint64  `json:"free"`
@@ -54,4 +57,11 @@ type NetStat struct {
 	TxPackets uint64 `json:"tx_packets"` // 累计发送数据包数
 	TxErrors  uint64 `json:"tx_errors"`  // 累计发送数据包错误数
 	TxDropped uint64 `json:"tx_dropped"` // 累计发送数据包丢弃数
+}
+
+type ProcStat struct {
+	PID  int     `json:"pid"`
+	Name string  `json:"name"`
+	CPU  float64 `json:"cpu"`
+	Mem  float64 `json:"mem"`
 }
