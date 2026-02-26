@@ -6,5 +6,5 @@ import (
 )
 
 type Collector interface {
-	Collect(ctx context.Context) (*model.Metrics, error)
+	Collect(ctx context.Context) (*model.Metrics, *model.CollectErrors)
 }

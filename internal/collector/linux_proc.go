@@ -1,6 +1,3 @@
-//go:build proc_refactor
-// +build proc_refactor
-
 package collector
 
 import (
@@ -378,10 +375,11 @@ func statFS(path string) (total, free, avail, inodes, inodesFree uint64, err err
 // 3) 读取 /proc/diskstats (IO 计数)，只保留物理磁盘
 type DiskIOStat struct {
 	Name         string
-	ReadIOs      uint64
-	ReadSectors  uint64
-	WriteIOs     uint64
-	WriteSectors uint64
+	ReadIOs      uint64 // 读 I/O 次数
+	ReadSectors  uint64 // 读扇区数
+	WriteIOs     uint64 // 写 I/O 次数
+	WriteSectors uint64 // 写扇区数
+	IOQueuesTime uint64 // I/O等待时间 ms
 }
 
 func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
@@ -416,12 +414,15 @@ func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 		readSectors, _ := strconv.ParseUint(fields[5], 10, 64)
 		writeIO, _ := strconv.ParseUint(fields[7], 10, 64)
 		writeSectors, _ := strconv.ParseUint(fields[9], 10, 64)
+		ioQueuesTime, _ := strconv.ParseUint(fields[12], 10, 64)
+
 		stats[name] = DiskIOStat{
 			Name:         name,
 			ReadIOs:      readIO,
 			ReadSectors:  readSectors,
 			WriteIOs:     writeIO,
 			WriteSectors: writeSectors,
+			IOQueuesTime: ioQueuesTime,
 		}
 	}
 	return stats, nil
@@ -473,7 +474,7 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 		}
 
 		// 获取容量信息
-		total, free, avail, inodes, inodesFree, err := statFS(mountPoint)
+		total, free, _, inodes, inodesFree, err := statFS(mountPoint)
 		if err != nil {
 			continue
 		}
@@ -496,6 +497,7 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 			InodesUsedPercent: utils.Pct(inodes-inodesFree, inodes),
 			Read:              ioStat.ReadIOs,
 			Write:             ioStat.WriteIOs,
+			IOQueueTime:       ioStat.IOQueuesTime,
 		})
 	}
 	return out, nil

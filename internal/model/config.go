@@ -41,3 +41,12 @@ type AlertConfig struct {
 	TCPCLOSEWaitThreshold      uint64  `mapstructure:"tcp_close_wait_threshold"`      // CLOSE_WAIT连接数阈值
 	TotalTCPThreshold          uint64  `mapstructure:"total_tcp_threshold"`           // 总TCP连接数阈值
 }
+
+type EmailConfig struct {
+	Host     string   `mapstructure:"host"`
+	Port     int      `mapstructure:"port"`
+	Username string   `mapstructure:"username"`
+	Password string   `mapstructure:"password"`
+	From     string   `mapstructure:"from"`
+	To       []string `mapstructure:"to"`
+}
