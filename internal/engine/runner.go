@@ -35,6 +35,12 @@ func NewRunner(c collector.Collector, interval time.Duration, logger *log.Logger
 	}
 }
 
+func (r *Runner) Snapshot() (metrics *model.Metrics, errs *model.CollectErrors, at time.Time) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.last, r.lastErrs, r.lastAt
+}
+
 func (r *Runner) SetAlerting(checker alert.AlertChecker, sender alert.AlertSender, emailCfg model.EmailConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -101,12 +107,6 @@ func (r *Runner) collectOnce(parent context.Context) {
 
 	r.logger.Printf("collect finished: host=%s ts=%s", metrics.Host, metrics.UpdateTimestamp)
 	r.processAlerts(parent, metrics)
-}
-
-func (r *Runner) Snapshot() (metrics *model.Metrics, errs *model.CollectErrors, at time.Time) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.last, r.lastErrs, r.lastAt
 }
 
 func (r *Runner) processAlerts(ctx context.Context, metrics *model.Metrics) {

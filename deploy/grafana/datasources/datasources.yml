@@ -1,0 +1,11 @@
+# 使用Claude Code 接入 MiniMax-2.5 辅助创建
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

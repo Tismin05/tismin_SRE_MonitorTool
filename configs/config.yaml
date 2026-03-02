@@ -3,3 +3,9 @@ app:
   debug: true
   log_path: "./app.log"
 
+alert:
+  enabled: true
+  disk_threshold: 85.0          # 磁盘使用率阈值 (%)
+  disk_await_threshold: 50.0    # 磁盘平均等待时间阈值 (ms)
+  disk_util_threshold: 80.0     # 磁盘利用率阈值 (%)
+  inodes_threshold: 80.0

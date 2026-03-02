@@ -1,0 +1,35 @@
+app:
+  name: "tisminSRETool"
+  version: "1.0.0"
+  refresh_interval: "5s"
+  loglevel: "info"
+  log_path: "/dev/stdout"
+
+http:
+  listen: ":8080"
+  timeout: "30s"
+
+prometheus:
+  enabled: true
+  path: "/metrics"
+
+alert:
+  enabled: ${ALERT_ENABLED:-true}
+  disk_threshold: 85.0
+  disk_await_threshold: 50.0
+  disk_util_threshold: 80.0
+  inodes_threshold: 80.0
+  cpu_threshold: 80.0
+  memory_threshold: 85.0
+
+email:
+  host: ${SMTP_HOST:-""}
+  port: ${SMTP_PORT:-587}
+  username: ${SMTP_USERNAME:-""}
+  password: ${SMTP_PASSWORD:-""}
+  from: ${SMTP_FROM:-""}
+  to:
+    - ${SMTP_TO:-""}
+
+diagnostic:
+  enabled: false

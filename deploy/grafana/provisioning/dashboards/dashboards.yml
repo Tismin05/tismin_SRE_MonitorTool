@@ -1,0 +1,10 @@
+# 使用Claude Code 接入 MiniMax-2.5 辅助创建
+
+apiVersion: 1
+
+providers:
+  - name: 'tisminSRETool Dashboards'
+    folder: 'tisminSRETool'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards

@@ -3,12 +3,13 @@ package model
 import "time"
 
 type Config struct {
-	App Appconfig `mapstructure:"app"`
-	// Collect    CollectorConfig  `mapstructure:"collect"`
+	App        Appconfig        `mapstructure:"app"`
+	HTTP       HTTPConfig       `mapstructure:"http"`
+	Prometheus PrometheusConfig `mapstructure:"prometheus"`
 	Diagnostic DiagnosticConfig `mapstructure:"diagnostic"`
 	Alert      AlertConfig      `mapstructure:"alert"`
+	Email      EmailConfig      `mapstructure:"email"`
 }
-
 type Appconfig struct {
 	Name            string        `mapstructure:"name"`
 	Version         string        `mapstructure:"version"`
@@ -49,4 +50,14 @@ type EmailConfig struct {
 	Password string   `mapstructure:"password"`
 	From     string   `mapstructure:"from"`
 	To       []string `mapstructure:"to"`
+}
+
+type HTTPConfig struct {
+	Listen  string        `mapstructure:"listen"`
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+type PrometheusConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Path    string `mapstructure:"path"`
 }
