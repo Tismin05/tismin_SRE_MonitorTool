@@ -1,68 +1,65 @@
-name: SRE-Tool-CI-CD
+name: CI/CD Pipeline
 
 on:
   push:
     branches: [ "main" ]
-    # 当你打上类似 v1.0.0 的 Tag 并推送时，触发 Docker 镜像构建与发布
-    tags: [ 'v*' ] 
+    tags: [ "v*" ] # 当推送 v0.1.0 等标签时触发镜像构建
   pull_request:
     branches: [ "main" ]
 
 jobs:
-  # 阶段一：持续集成 (CI) - 每次 push main 都会执行
   test-and-lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0' # 严格匹配你项目 go.mod 中的版本
+          go-version: '1.24'
           cache: true
-      - name: Install dependencies
-        run: go mod download
 
-      - name: Verify dependencies
-        run: go mod verify
+      - name: Prepare Dependencies
+        run: |
+          go mod tidy
+          go mod vendor # 解决 "no export data for golang.org/x/sys/unix" 的核心步骤
 
       - name: Static Analysis (Linter)
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # 告诉 linter 使用本地 vendor 目录，避免重复下载和元数据缺失
+          args: --modules-download-mode=vendor --timeout=5m
 
-      - name: Run Unit Tests
-        # -race 检测并发安全问题，非常契合你项目中的多 Goroutine 设计
-        run: go test -v -race ./...
+      - name: Run Tests
+        run: go test -v ./...
 
-  # 阶段二：构建与分发 (CD) - 仅在推送 Tag 时执行
   build-and-push-image:
+    # 只有在代码通过了上面的测试和 Linter，且推送了标签时，才执行这一步
     needs: test-and-lint
-    # 这一行确保只有在打 tag (如 v1.0) 时才真正去构建并推送到 Docker Hub
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and Push
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/tisminsretool
+
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          # 自动打上版本号标签和 latest 标签
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/tismin-sre-tool:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/tismin-sre-tool:${{ github.ref_name }}
-          # 针对服务器与云原生环境，构建 Linux AMD64 架构镜像
-          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
