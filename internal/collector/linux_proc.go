@@ -428,7 +428,7 @@ func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 // 判断是否为分区
 // sda, nvme0n1 -> false (整盘)
 // sda1, nvme0n1p1 -> true (分区)
-func isPartition(name string) bool {
+/*func isPartition(name string) bool {
 	// NVMe 设备: nvme0n1p1
 	if strings.HasPrefix(name, "nvme") && strings.Contains(name, "p") {
 		return true
@@ -439,7 +439,7 @@ func isPartition(name string) bool {
 		return err == nil
 	}
 	return false
-}
+}*/
 
 // CollectDisk 组合 DiskStat 从物理磁盘出发，查找挂载点，正确匹配 IO 统计
 func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {

@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 	"tisminSRETool/internal/engine"
@@ -28,7 +29,9 @@ func NewHTTPServer(config model.HTTPConfig, runner *engine.Runner) *HTTPServer {
 	// Health Check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("failed to write response: %v", err)
+		}
 	})
 
 	// Status endpoint
@@ -38,7 +41,12 @@ func NewHTTPServer(config model.HTTPConfig, runner *engine.Runner) *HTTPServer {
 
 		if errs != nil && errs.HasError() {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"unavailable"}`))
+			if _, err := w.Write([]byte(`{"status":"unavailable"}`)); err != nil {
+				log.Printf("failed to write response: %v", err)
+			}
+			if _, err := w.Write([]byte(`{"status":"ok","last_update":"` + at.Format(time.RFC3339) + `"}`)); err != nil {
+				log.Printf("failed to write response: %v", err)
+			}
 			return
 		}
 
