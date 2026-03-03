@@ -16,10 +16,12 @@ func CalculateRate(prev, cur model.Metrics, interval time.Duration) model.Metric
 	// CPU相关信息计算
 	diffTotal := cur.CPU.TotalTicks - prev.CPU.TotalTicks
 	diffIdle := cur.CPU.IdleTicks - prev.CPU.IdleTicks
-	if diffTotal > 0 && diffIdle > 0 && diffIdle > diffTotal {
+	if diffTotal > 0 && diffIdle <= diffTotal {
 		used = diffTotal - diffIdle
 	}
-	res.CPU.UsagePercent = float64(used) / float64(diffTotal) * 100
+	if diffTotal > 0 {
+		res.CPU.UsagePercent = float64(used) / float64(diffTotal) * 100
+	}
 
 	// 内存相关信息计算
 
@@ -35,7 +37,7 @@ func CalculateRate(prev, cur model.Metrics, interval time.Duration) model.Metric
 			totalIOs := diffReadIOs + diffWriteIOs
 
 			if totalIOs > 0 && diffIOTime > 0 {
-				res.Disk[i].Await = diffIOTime / float64(diffReadIOs)
+				res.Disk[i].Await = diffIOTime / float64(totalIOs)
 				totalMs := seconds * 1000
 				res.Disk[i].Util = diffIOTime / totalMs * 100
 			}

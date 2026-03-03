@@ -6,6 +6,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"tisminSRETool/internal/model"
 	"tisminSRETool/pkg/utils"
 
@@ -62,9 +64,12 @@ func CollectCPUStat(ctx context.Context) (model.CPUStat, error) {
 		return model.CPUStat{}, err
 	}
 
-	perCPU, err := collectCPUInfo(ctx, cores)
+	perCPU, totalTicks, idleTicks, err := collectCPUInfo(ctx, cores)
 	if err != nil {
 		return model.CPUStat{}, err
+	}
+	if len(perCPU) > 0 {
+		cores = len(perCPU)
 	}
 
 	avg := 0.0
@@ -90,90 +95,136 @@ func CollectCPUStat(ctx context.Context) (model.CPUStat, error) {
 		Load1:        loads[0],
 		Load5:        loads[1],
 		Load15:       loads[2],
+		TotalTicks:   totalTicks,
+		IdleTicks:    idleTicks,
 	}, nil
 }
 
-func collectCPUInfo(ctx context.Context, cores int) (perCPU []float64, err error) {
-	var perCPUUsage []float64
-	lines, err := utils.ReadLinesOffsetNWithContext(ctx, "/proc/stat", 0, -1)
+const cpuSampleWindow = 200 * time.Millisecond
+
+type cpuSnapshot struct {
+	total float64
+	idle  float64
+}
+
+func collectCPUInfo(ctx context.Context, cores int) (perCPU []float64, totalTicks uint64, idleTicks uint64, err error) {
+	_, startPerCPU, err := readCPUSnapshots(ctx, cores)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
-	for _, line := range lines[1 : cores+1] {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			log.Printf("invalid format of /proc/stat: %s", line)
-			continue
-		}
-		if fields[0] == "cpu" {
-			continue
-		}
-		if len(fields) < 5 {
-			log.Printf("invalid format of /proc/stat: %s", line)
-			continue
-		}
 
-		usr, err := strconv.ParseFloat(fields[1], 64)
-		if err != nil {
-			log.Printf("invalid format of /proc/stat: %s", line)
+	timer := time.NewTimer(cpuSampleWindow)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, 0, 0, ctx.Err()
+	case <-timer.C:
+	}
+
+	endOverall, endPerCPU, err := readCPUSnapshots(ctx, cores)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if endOverall.total > 0 {
+		totalTicks = uint64(endOverall.total)
+	}
+	if endOverall.idle > 0 {
+		idleTicks = uint64(endOverall.idle)
+	}
+
+	n := len(startPerCPU)
+	if len(endPerCPU) < n {
+		n = len(endPerCPU)
+	}
+	if n == 0 {
+		return nil, totalTicks, idleTicks, fmt.Errorf("no cpu core stats found in /proc/stat")
+	}
+
+	perCPUUsage := make([]float64, 0, n)
+	for i := 0; i < n; i++ {
+		diffTotal := endPerCPU[i].total - startPerCPU[i].total
+		diffIdle := endPerCPU[i].idle - startPerCPU[i].idle
+		if diffTotal <= 0 {
 			continue
 		}
-
-		nice, err := strconv.ParseFloat(fields[2], 64)
-		if err != nil {
-			log.Printf("invalid format of /proc/stat: %s", line)
-			continue
+		usage := (diffTotal - diffIdle) / diffTotal * 100
+		if usage < 0 {
+			usage = 0
 		}
-
-		system, err := strconv.ParseFloat(fields[3], 64)
-		if err != nil {
-			log.Printf("invalid format of /proc/stat: %s", line)
-			continue
+		if usage > 100 {
+			usage = 100
 		}
-
-		idle, err := strconv.ParseFloat(fields[4], 64)
-		if err != nil {
-			log.Printf("invalid format of /proc/stat: %s", line)
-			continue
-		}
-
-		iowait := 0.0
-		if len(fields) > 5 {
-			iowait, _ = strconv.ParseFloat(fields[5], 64)
-		}
-		irq := 0.0
-		if len(fields) > 6 {
-			irq, _ = strconv.ParseFloat(fields[6], 64)
-		}
-		softirq := 0.0
-		if len(fields) > 7 {
-			softirq, _ = strconv.ParseFloat(fields[7], 64)
-		}
-		steal := 0.0
-		if len(fields) > 8 {
-			steal, _ = strconv.ParseFloat(fields[8], 64)
-		}
-		guest := 0.0
-		if len(fields) > 9 {
-			guest, _ = strconv.ParseFloat(fields[9], 64)
-		}
-		guestnice := 0.0
-		if len(fields) > 10 {
-			guestnice, _ = strconv.ParseFloat(fields[10], 64)
-		}
-
-		total := usr + nice + system + idle + iowait + irq + softirq + steal + guest + guestnice
-		if total <= 0 {
-			continue
-		}
-		busy := total - idle - iowait
-		usage := busy / total * 100
 		perCPUUsage = append(perCPUUsage, usage)
 	}
-	return perCPUUsage, nil
+	if len(perCPUUsage) == 0 {
+		return nil, totalTicks, idleTicks, fmt.Errorf("failed to calculate cpu usage from /proc/stat")
+	}
+	return perCPUUsage, totalTicks, idleTicks, nil
+}
+
+func readCPUSnapshots(ctx context.Context, cores int) (overall cpuSnapshot, perCPU []cpuSnapshot, err error) {
+	lines, err := utils.ReadLinesOffsetNWithContext(ctx, "/proc/stat", 0, -1)
+	if err != nil {
+		return cpuSnapshot{}, nil, err
+	}
+	for _, line := range lines {
+		if err := ctx.Err(); err != nil {
+			return cpuSnapshot{}, nil, err
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if !strings.HasPrefix(fields[0], "cpu") {
+			if len(perCPU) > 0 {
+				break
+			}
+			continue
+		}
+
+		snapshot, ok := parseCPUSnapshot(fields[1:])
+		if !ok {
+			log.Printf("invalid format of /proc/stat: %s", line)
+			continue
+		}
+
+		if fields[0] == "cpu" {
+			overall = snapshot
+			continue
+		}
+		perCPU = append(perCPU, snapshot)
+
+		if cores > 0 && len(perCPU) >= cores {
+			break
+		}
+	}
+	if len(perCPU) == 0 {
+		return cpuSnapshot{}, nil, fmt.Errorf("no cpu core stats found in /proc/stat")
+	}
+	return overall, perCPU, nil
+}
+
+func parseCPUSnapshot(fields []string) (cpuSnapshot, bool) {
+	if len(fields) < 4 {
+		return cpuSnapshot{}, false
+	}
+
+	total := 0.0
+	idle := 0.0
+	for i, raw := range fields {
+		val, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return cpuSnapshot{}, false
+		}
+		total += val
+		if i == 3 || i == 4 {
+			idle += val
+		}
+	}
+	if total <= 0 {
+		return cpuSnapshot{}, false
+	}
+	return cpuSnapshot{total: total, idle: idle}, true
 }
 
 func collectLoadAvg(ctx context.Context) ([]float64, error) {
@@ -282,6 +333,7 @@ func CollectMeminfo(ctx context.Context) (m *model.MemoryStat, err error) {
 			continue
 		}
 	}
+	ret.Available = available
 	if available > 0 {
 		ret.Used = ret.Total - available
 	} else {
@@ -382,6 +434,14 @@ type DiskIOStat struct {
 	IOQueuesTime uint64 // I/O等待时间 ms
 }
 
+var (
+	diskStateMu    sync.Mutex
+	prevDiskStats  map[string]DiskIOStat
+	prevDiskStatAt time.Time
+)
+
+const sectorSizeBytes uint64 = 512
+
 func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 	lines, err := utils.ReadLinesOffsetNWithContext(ctx, "/proc/diskstats", 0, -1)
 	if err != nil {
@@ -455,6 +515,9 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 		return nil, err
 	}
 
+	now := time.Now()
+	prevStats, elapsedSec := snapshotPrevDiskStats(ioStats, now)
+
 	var out []model.DiskStat
 	// 遍历物理磁盘
 	for deviceName, ioStat := range ioStats {
@@ -480,6 +543,28 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 			usedPct = float64(used) / float64(total) * 100
 		}
 
+		readBytes := ioStat.ReadSectors * sectorSizeBytes
+		writeBytes := ioStat.WriteSectors * sectorSizeBytes
+
+		await := 0.0
+		util := 0.0
+		if elapsedSec > 0 && prevStats != nil {
+			if prev, ok := prevStats[deviceName]; ok {
+				diffReadIO := uint64Diff(ioStat.ReadIOs, prev.ReadIOs)
+				diffWriteIO := uint64Diff(ioStat.WriteIOs, prev.WriteIOs)
+				diffIOs := diffReadIO + diffWriteIO
+				diffQueueTime := uint64Diff(ioStat.IOQueuesTime, prev.IOQueuesTime)
+
+				if diffIOs > 0 {
+					await = float64(diffQueueTime) / float64(diffIOs)
+				}
+				util = float64(diffQueueTime) / (elapsedSec * 1000) * 100
+				if util < 0 {
+					util = 0
+				}
+			}
+		}
+
 		out = append(out, model.DiskStat{
 			MountPoint:        mountPoint,
 			Device:            deviceName,
@@ -491,12 +576,37 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 			InodesFree:        inodesFree,
 			InodesUsed:        inodes - inodesFree,
 			InodesUsedPercent: utils.Pct(inodes-inodesFree, inodes),
-			Read:              ioStat.ReadIOs,
-			Write:             ioStat.WriteIOs,
+			Read:              readBytes,
+			ReadSectors:       ioStat.ReadSectors,
+			Write:             writeBytes,
+			WriteSectors:      ioStat.WriteSectors,
+			Await:             await,
+			Util:              util,
 			IOQueueTime:       ioStat.IOQueuesTime,
 		})
 	}
 	return out, nil
+}
+
+func snapshotPrevDiskStats(current map[string]DiskIOStat, now time.Time) (map[string]DiskIOStat, float64) {
+	diskStateMu.Lock()
+	defer diskStateMu.Unlock()
+
+	previous := prevDiskStats
+	elapsed := 0.0
+	if !prevDiskStatAt.IsZero() {
+		elapsed = now.Sub(prevDiskStatAt).Seconds()
+	}
+	prevDiskStats = current
+	prevDiskStatAt = now
+	return previous, elapsed
+}
+
+func uint64Diff(cur, prev uint64) uint64 {
+	if cur < prev {
+		return 0
+	}
+	return cur - prev
 }
 
 func CollectNetinfo(ctx context.Context) ([]model.NetStat, error) {

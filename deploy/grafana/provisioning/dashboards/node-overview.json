@@ -140,19 +140,19 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "system_memory_total{host=\"$host\"}",
+          "expr": "system_memory_total_bytes{host=\"$host\"}",
           "legendFormat": "Total",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "system_memory_used{host=\"$host\"}",
+          "expr": "system_memory_used_bytes{host=\"$host\"}",
           "legendFormat": "Used",
           "refId": "B"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "expr": "system_memory_available{host=\"$host\"}",
+          "expr": "system_memory_available_bytes{host=\"$host\"}",
           "legendFormat": "Available",
           "refId": "C"
         }

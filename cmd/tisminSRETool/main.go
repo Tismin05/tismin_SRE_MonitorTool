@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	configPath  = flag.String("config", "config.json", "path to config file")
+	configPath  = flag.String("config", "configs/config.yaml", "path to config file")
 	showVersion = flag.Bool("version", false, "show version")
 )
 
@@ -54,14 +54,14 @@ func main() {
 
 	// 启动 Prometheus Exporter
 	var promExporter *exporter.PrometheusExporter
-	if cfg.Alert.Enabled {
+	if cfg.Prometheus.Enabled {
 		promExporter = exporter.NewPrometheusExporter(runner)
 		go promExporter.StartMetricsCollector(ctx, cfg.App.RefreshInterval)
 	}
 
 	// 启动 HTTP Server
 	if cfg.HTTP.Listen != "" {
-		httpServer := exporter.NewHTTPServer(cfg.HTTP, runner)
+		httpServer := exporter.NewHTTPServer(cfg.HTTP, cfg.Prometheus.Path, runner)
 		go func() {
 			logger.Printf("HTTP server listening on %s", cfg.HTTP.Listen)
 			if err := httpServer.Start(ctx); err != nil {
@@ -107,13 +107,14 @@ func loadConfig() *model.Config {
 }
 
 func setupLogger(appCfg model.Appconfig) *log.Logger {
-	var output *os.File
+	output := os.Stdout
 	var err error
 
 	if appCfg.LogPath != "" {
 		output, err = os.OpenFile(appCfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			log.Printf("warning: cannot open log file: %v", err)
+			output = os.Stdout
 		}
 	}
 

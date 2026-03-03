@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 	"tisminSRETool/internal/engine"
 	"tisminSRETool/internal/model"
@@ -12,19 +13,24 @@ import (
 )
 
 type HTTPServer struct {
-	config model.HTTPConfig
-	server *http.Server
-	runner *engine.Runner
+	config      model.HTTPConfig
+	metricsPath string
+	server      *http.Server
+	runner      *engine.Runner
 }
 
-func NewHTTPServer(config model.HTTPConfig, runner *engine.Runner) *HTTPServer {
+func NewHTTPServer(config model.HTTPConfig, metricsPath string, runner *engine.Runner) *HTTPServer {
+	if metricsPath == "" {
+		metricsPath = "/metrics"
+	}
+	if !strings.HasPrefix(metricsPath, "/") {
+		metricsPath = "/" + metricsPath
+	}
+
 	mux := http.NewServeMux()
 
 	// Prometheus metrics endpoint
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		handler := promhttp.Handler()
-		handler.ServeHTTP(w, r)
-	})
+	mux.Handle(metricsPath, promhttp.Handler())
 
 	// Health Check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -44,9 +50,6 @@ func NewHTTPServer(config model.HTTPConfig, runner *engine.Runner) *HTTPServer {
 			if _, err := w.Write([]byte(`{"status":"unavailable"}`)); err != nil {
 				log.Printf("failed to write response: %v", err)
 			}
-			if _, err := w.Write([]byte(`{"status":"ok","last_update":"` + at.Format(time.RFC3339) + `"}`)); err != nil {
-				log.Printf("failed to write response: %v", err)
-			}
 			return
 		}
 
@@ -61,7 +64,8 @@ func NewHTTPServer(config model.HTTPConfig, runner *engine.Runner) *HTTPServer {
 	})
 
 	return &HTTPServer{
-		config: config,
+		config:      config,
+		metricsPath: metricsPath,
 		server: &http.Server{
 			Addr:         config.Listen,
 			Handler:      mux,
