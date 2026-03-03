@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  tisminSRETool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tismin-sre-tool:latest
+    container_name: tisminSRETool
+    ports:
+      - "8080:8080"
+    environment:
+      - TISMIN_ALERT_ENABLED=true
+      - TISMIN_SMTP_HOST=${SMTP_HOST}
+      - TISMIN_SMTP_PORT=${SMTP_PORT}
+      - TISMIN_SMTP_USERNAME=${SMTP_USERNAME}
+      - TISMIN_SMTP_PASSWORD=${SMTP_PASSWORD}
+      - TISMIN_SMTP_FROM=${SMTP_FROM}
+      - TISMIN_SMTP_TO=${SMTP_TO}
+    volumes:
+      - /proc:/proc:ro
+      - ./configs:/app/configs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -1,11 +1,49 @@
+# 应用基础配置
 app:
   name: "tisminSRETool"
-  debug: true
-  log_path: "./app.log"
+  version: "1.0.0"
+  refresh_interval: "5s"           # 指标采集间隔
+  loglevel: "info"                # 日志级别: debug, info, warn, error
+  log_path: "./app.log"           # 日志输出路径
 
+# HTTP 服务器配置（用于 Prometheus Exporter）
+http:
+  listen: ":8080"                 # 监听地址
+  timeout: "30s"                  # 请求超时时间
+
+# Prometheus 配置
+prometheus:
+  enabled: true                   # 是否启用 Prometheus Exporter
+  path: "/metrics"                # metrics 端点路径
+
+# 告警配置
 alert:
-  enabled: true
-  disk_threshold: 85.0          # 磁盘使用率阈值 (%)
-  disk_await_threshold: 50.0    # 磁盘平均等待时间阈值 (ms)
-  disk_util_threshold: 80.0     # 磁盘利用率阈值 (%)
-  inodes_threshold: 80.0
+  enabled: true                   # 是否启用告警
+  cpu_threshold: 80.0              # CPU 使用率阈值 (%)
+  memory_threshold: 85.0            # 内存使用率阈值 (%)
+  disk_threshold: 85.0             # 磁盘使用率阈值 (%)
+  disk_await_threshold: 50.0       # 磁盘平均等待时间阈值 (ms)
+  disk_util_threshold: 80.0        # 磁盘利用率阈值 (%)
+  inodes_threshold: 80.0           # Inodes 使用率阈值 (%)
+  network_bandwidth_threshold: 80.0  # 网卡带宽使用率阈值 (%)
+  network_packet_loss_threshold: 1.0  # 丢包率阈值 (%)
+  network_rtt_threshold: 100.0     # 网络延迟阈值 (ms)
+  tcp_time_wait_threshold: 1000    # TIME_WAIT 连接数阈值
+  tcp_close_wait_threshold: 100   # CLOSE_WAIT 连接数阈值
+  total_tcp_threshold: 10000      # 总 TCP 连接数阈值
+
+# 邮件告警配置
+email:
+  host: "smtp.example.com"        # SMTP 服务器地址
+  port: 587                       # SMTP 端口
+  username: "your-email@example.com"
+  password: "your-password"
+  from: "tisminSRETool <your-email@example.com>"
+  to:                             # 告警接收者列表
+    - "admin@example.com"
+    - "oncall@example.com"
+
+# 诊断配置
+diagnostic:
+  enabled: false                  # 是否启用诊断功能
+  show_top_n_list: 10             # 显示 Top N 列表的数量
