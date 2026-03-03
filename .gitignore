@@ -17,3 +17,4 @@ coverage.txt
 # 排除系统冗余
 .DS_Store
 *.swp
+.idea/
