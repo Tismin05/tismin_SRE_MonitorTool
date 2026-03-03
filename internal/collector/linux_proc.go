@@ -399,16 +399,13 @@ func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 		name := strings.TrimSpace(fields[2])
 
 		// 过滤虚拟设备和分区
-		// - loop*: 虚拟回环设备
-		// - ram*: 内存盘
-		// - sda/sdb 等后面带数字的：分区（如 sda1），只保留整盘（sda）
 		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") {
 			continue
 		}
 		// 如果是分区（如 sda1, nvme0n1p1），只保留整盘
-		if isPartition(name) {
-			continue
-		}
+		//if isPartition(name) {
+		//	continue
+		//}
 
 		readIO, _ := strconv.ParseUint(fields[3], 10, 64)
 		readSectors, _ := strconv.ParseUint(fields[5], 10, 64)
@@ -444,8 +441,7 @@ func isPartition(name string) bool {
 	return false
 }
 
-// 4) 组合成你的 DiskStat
-// 思路：从物理磁盘出发，查找挂载点，正确匹配 IO 统计
+// CollectDisk 组合 DiskStat 从物理磁盘出发，查找挂载点，正确匹配 IO 统计
 func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 	// 获取设备名 -> 挂载点 映射
 	mounts, err := readMounts(ctx)
@@ -460,13 +456,13 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 	}
 
 	var out []model.DiskStat
-	// 遍历物理磁盘，而非挂载点
+	// 遍历物理磁盘
 	for deviceName, ioStat := range ioStats {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
-		// 查找该物理磁盘的挂载点
+		// 查找该物理磁盘挂载点
 		mountPoint, ok := mounts[deviceName]
 		if !ok {
 			// 物理磁盘没有挂载点（如未使用的磁盘），跳过
