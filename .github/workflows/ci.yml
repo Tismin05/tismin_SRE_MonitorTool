@@ -20,6 +20,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.0' # 严格匹配你项目 go.mod 中的版本
+          cache: true
+      - name: Install dependencies
+        run: go mod download
 
       - name: Verify dependencies
         run: go mod verify
