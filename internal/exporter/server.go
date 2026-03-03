@@ -55,7 +55,9 @@ func NewHTTPServer(config model.HTTPConfig, runner *engine.Runner) *HTTPServer {
 			return
 		}
 
-		w.Write([]byte(`{"status":"ok","last_update":"` + at.Format(time.RFC3339) + `"}`))
+		if _, err := w.Write([]byte(`{"status":"ok","last_update":"` + at.Format(time.RFC3339) + `"}`)); err != nil {
+			log.Printf("failed to write response: %v", err)
+		}
 	})
 
 	return &HTTPServer{
