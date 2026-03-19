@@ -54,6 +54,10 @@ func (r *Runner) Run(ctx context.Context) {
 		ctx = context.Background()
 	}
 
+	// 启动后台采集器（100ms 采样间隔）
+	go collector.StartCPUCollector(ctx, 100*time.Millisecond)
+	go collector.StartNetCollector(ctx, 100*time.Millisecond)
+
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
