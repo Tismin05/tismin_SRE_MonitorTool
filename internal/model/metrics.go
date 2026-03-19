@@ -76,3 +76,78 @@ type ProcStat struct {
 	CPU  float64 `json:"cpu"`
 	Mem  float64 `json:"mem"`
 }
+
+// ============================================
+// 尝试适配 Prometheus 的 Counter 逻辑
+// 新建数据结构存储相关信息
+// 内存不需要累积值，可以不使用 Counter 逻辑
+// ============================================
+
+// CPURawData 原始CPU累计数据
+type CPURawData struct {
+	Cores     int              `json:"cores"`      // CPU核心数
+	User      uint64           `json:"user"`       // 用户态时间 (jiffies)
+	Nice      uint64           `json:"nice"`       // 低优先级用户态时间
+	System    uint64           `json:"system"`     // 内核态时间
+	Idle      uint64           `json:"idle"`       // 空闲时间
+	Iowait    uint64           `json:"iowait"`     // I/O等待时间
+	IRQ       uint64           `json:"irq"`        // 硬中断时间
+	SoftIRQ   uint64           `json:"softirq"`    // 软中断时间
+	Steal     uint64           `json:"steal"`      // 虚拟化偷取时间
+	Guest     uint64           `json:"guest"`      // Guest时间
+	GuestNice uint64           `json:"guest_nice"` // Guest Nice时间
+	PerCPU    []CPUCoreRawData `json:"per_cpu"`    // 每个核心的原始数据
+}
+
+// CPUCoreRawData 单个CPU核心的原始数据
+type CPUCoreRawData struct {
+	Index   int    `json:"index"`
+	User    uint64 `json:"user"`
+	Nice    uint64 `json:"nice"`
+	System  uint64 `json:"system"`
+	Idle    uint64 `json:"idle"`
+	Iowait  uint64 `json:"iowait"`
+	IRQ     uint64 `json:"irq"`
+	SoftIRQ uint64 `json:"softirq"`
+	Steal   uint64 `json:"steal"`
+	Guest   uint64 `json:"guest"`
+}
+
+// NetRawData 原始网络累计数据
+type NetRawData []NetInterfaceRaw
+
+// NetInterfaceRaw 单个网卡的原始累计数据
+type NetInterfaceRaw struct {
+	Name      string `json:"name"`       // 网卡名
+	RxBytes   uint64 `json:"rx_bytes"`   // 累计接收字节数
+	RxPackets uint64 `json:"rx_packets"` // 累计接收包数
+	RxErrors  uint64 `json:"rx_errors"`  // 累计接收错误
+	RxDropped uint64 `json:"rx_dropped"` // 累计接收丢包
+	TxBytes   uint64 `json:"tx_bytes"`   // 累计发送字节数
+	TxPackets uint64 `json:"tx_packets"` // 累计发送包数
+	TxErrors  uint64 `json:"tx_errors"`  // 累计发送错误
+	TxDropped uint64 `json:"tx_dropped"` // 累计发送丢包
+}
+
+// DiskRawData 原始磁盘累计数据
+type DiskRawData []DiskInterfaceRaw
+
+// DiskInterfaceRaw 单个磁盘的原始累计数据
+type DiskInterfaceRaw struct {
+	Device       string `json:"device"`
+	MountPoint   string `json:"mount_point"`
+	ReadIOs      uint64 `json:"read_ios"`       // 累计读I/O次数
+	ReadSectors  uint64 `json:"read_sectors"`   // 累计读扇区数
+	WriteIOs     uint64 `json:"write_ios"`      // 累计写I/O次数
+	WriteSectors uint64 `json:"write_sectors"`  // 累计写扇区数
+	IOQueuesTime uint64 `json:"io_queues_time"` // I/O队列累计时间(ms)
+}
+
+// MetricsWithRaw 包含原始累计值的指标
+type MetricsWithRaw struct {
+	Metrics
+	// 原始累计值（用于Prometheus Counter）
+	CPURaw  *CPURawData `json:"cpu_raw,omitempty"`
+	NetRaw  NetRawData  `json:"net_raw,omitempty"`
+	DiskRaw DiskRawData `json:"disk_raw,omitempty"`
+}

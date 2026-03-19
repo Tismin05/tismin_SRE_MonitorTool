@@ -2,10 +2,10 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ "main", "develop", "develop/**", "feature/**" ]
     tags: [ "v*" ] # 当推送 v0.1.0 等标签时触发镜像构建
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: [ "main", "develop", "develop/**", "feature/**" ]
 
 jobs:
   test-and-lint:
