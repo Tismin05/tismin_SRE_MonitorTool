@@ -1,0 +1,29 @@
+run:
+  timeout: 5m
+  modules-download-mode: vender
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck      # 检查 error
+    - govet         # 基础代码检查
+    - gocritic      # 强化代码风格和性能建议
+    - ineffassign   # 检测无效的变量赋值
+    - staticcheck   # 静态分析工具
+    - gosimple      # 简化代码结构的建议
+    - bodyclose     # 防止 HTTP 响应体未关闭导致内存泄漏
+    - gosec         # 检查安全漏洞
+
+linters-settings:
+  govet:
+    enable:
+      - shadow
+  gocritic:
+    enabled-checks:
+      - goroutineLeak
+
+issues:
+  exclude-dirs:
+    - vendor
+  max-issues-per-linter: 0
+  max-same-issues: 0
