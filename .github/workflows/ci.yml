@@ -28,8 +28,9 @@ jobs:
       - name: Static Analysis (Linter)
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.59.1
-          args: --modules-download-mode=vendor
+          version: v1.64.5
+          # 告诉 linter 使用本地 vendor 目录，避免重复下载和元数据缺失
+          args: --modules-download-mode=vendor --timeout=5m
 
       - name: Run Tests with Race Detector
         run: go test -v -race ./...
