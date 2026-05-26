@@ -3,9 +3,10 @@ package cli
 import (
 	"context"
 	"time"
-	"tisminSRETool/internal/model"
 
 	"github.com/spf13/cobra"
+	"tisminSRETool/internal/collector"
+	"tisminSRETool/internal/model"
 )
 
 func NewCpuCmd() *cobra.Command {
@@ -16,7 +17,8 @@ func NewCpuCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				return collector.NewLinuxCollector().CollectCPU(ctx)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}
@@ -30,7 +32,8 @@ func NewMemCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				return collector.NewLinuxCollector().CollectMem(ctx)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}
@@ -44,7 +47,8 @@ func NewDiskCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				return collector.NewLinuxCollector().CollectDisk(ctx)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}
@@ -58,7 +62,8 @@ func NewNetCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				return collector.NewLinuxCollector().CollectNet(ctx)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}
@@ -72,7 +77,8 @@ func NewProcCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				return collector.NewLinuxCollector().CollectProc(ctx, procList...)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}
@@ -86,7 +92,8 @@ func NewPortCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				return collector.NewLinuxCollector().CollectPort(ctx, portList...)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}
@@ -100,8 +107,8 @@ func NewAllCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			runInspect(ctx, func() (*model.Metrics, *model.CollectErrors) {
-				// 全量采集：复用你现有的Collect()方法
-				return collector.NewLinuxCollector().Collect(ctx)
+				c := &collector.LinuxCollector{}
+				return c.Collect(ctx)
 			})
 		},
 	}

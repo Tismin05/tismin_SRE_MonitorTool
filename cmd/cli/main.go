@@ -6,17 +6,15 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	// 替换为你项目的真实包路径
-	"tisminSRETool/internal/alert"
 	"tisminSRETool/internal/model"
 )
 
 // ====================== 全局变量（对应你的Flags） ======================
 var (
 	thresholdJSON string   // --threshold/-t
-	jsonOutput    bool     // --json
-	verbose       bool     // --verbose/-v
-	portList      []int    // port命令 -p
+	jsonOutput    bool    // --json
+	verbose       bool    // --verbose/-v
+	portList      []int   // port命令 -p
 	procList      []string // proc命令 -n
 )
 
@@ -69,7 +67,7 @@ func init() {
 	_ = procCmd.MarkFlagRequired("name")
 }
 
-// ====================== 核心通用函数：复用Collector + AlertChecker ======================
+// ====================== 核心通用函数：复用Collector ======================
 func runInspect(ctx context.Context, collectFunc func() (*model.Metrics, *model.CollectErrors)) {
 	// 1. 复用采集器：采集指标
 	metrics, errs := collectFunc()
@@ -77,18 +75,10 @@ func runInspect(ctx context.Context, collectFunc func() (*model.Metrics, *model.
 		fmt.Printf("采集警告: %+v\n", errs)
 	}
 
-	// 2. 复用告警检查器：阈值判断
-	checker := alert.NewRuleChecker()
-	// 覆写自定义阈值
-	if thresholdJSON != "" {
-		_ = checker.LoadThresholdFromJSON(thresholdJSON)
-	}
-	alarms := checker.Check(metrics)
-
-	// 3. 输出格式：JSON / 彩色控制台
+	// 2. 输出格式：JSON / 彩色控制台
 	if jsonOutput {
-		outputJSON(metrics, alarms)
+		outputJSON(metrics, nil)
 	} else {
-		outputConsole(metrics, alarms)
+		outputConsole(metrics, nil)
 	}
 }
