@@ -1,286 +1,208 @@
 # tisminSRETool
 
-一个基于 Go 编写的 SRE 监控工具，用于采集系统指标（CPU、内存、磁盘、网络）、执行系统诊断和发送告警通知。
+`tisminSRETool` 是一个基于 Go 的 Linux 主机监控服务。它从 `/proc` 和 `statfs` 采集系统指标，在内存中保存最近一次采集快照，暴露 Prometheus 指标，并可基于阈值发送邮件告警。
 
-## 功能特性
+## 当前定位
 
-- **Linux 专注支持**：专注 Linux 系统指标采集
-- **全面指标**：CPU、内存、磁盘、网络、进程信息
-- **系统诊断**：可配置的系统健康检查
-- **告警系统**：支持 CPU、内存、磁盘、网络、Inodes 阈值告警
-- **速率计算**：计算采集间隔内的指标变化速率
-- **邮件通知**：支持 SMTP 告警邮件发送
-- **Context 支持**：通过 Context 实现优雅退出和超时控制
+- 仅支持 Linux
+- 数据来源：`/proc`、`statfs`
+- 主运行入口：`cmd/tisminSRETool/main.go`
+- 可选调试入口：`cmd/debug_tool/debug.go`
+- 历史时序数据不由程序内部保存，依赖 Prometheus 抓取和存储
 
-## Context流程图
+## 当前已实现功能
+
+- 周期性采集 CPU、内存、磁盘、网络指标
+- 通过 `engine.Runner` 维护最近一次快照
+- 暴露可配置路径的 Prometheus 指标
+- 提供健康检查和最近一次采集状态接口
+- 基于阈值执行告警判断
+- 通过 SMTP 发送邮件，并带重试
+- 提供 Prometheus + Grafana 的 Docker Compose 示例部署
+
+## 当前采集指标
+
+- CPU：核心数、平均使用率、每核使用率、1/5/15 分钟负载
+- 内存：总量、空闲、可用、已用、Swap、使用率
+- 磁盘：容量、空闲/已用字节、inode 使用情况、读写字节、await、util
+- 网络：收发字节、包数、错误数、丢包数
+
+## 当前已生效的告警检查
+
+当前规则检查器实际会判断：
+
+- CPU 使用率
+- 内存使用率
+- 磁盘使用率
+- 磁盘 await
+- 磁盘 util
+- inode 使用率
+- 基础网络错误率和丢包率
+
+`alert` 配置中有一部分字段已经定义在模型里，但还没有全部接入当前规则检查逻辑。
+
+## 架构概览
 
 ```mermaid
-flowchart TD
-    subgraph EntryPoint["入口层 cmd/main.go"]
-        A["signal.NotifyContext\n(监听 SIGINT/SIGTERM)"]
+flowchart TB
+    MAIN["cmd/tisminSRETool/main.go"] --> RUNNER["engine.Runner"]
+
+    subgraph BG["后台 CPU 采集器 (启动一次)"]
+        BG_GO["goroutine"] --> TICKER["100ms 定时器"]
+        TICKER --> READ["读取 /proc/stat"]
+        READ --> BUFFER["环形缓存 [2]"]
     end
 
-    subgraph Engine["调度层 engine/runner.go"]
-        B["Engine.Run(ctx)"]
-        C{"select"}
-        D["ctx.Done() → 优雅退出"]
-        E["ticker.C → 开始采集"]
+    RUNNER --> START_BG["启动后台采集器"]
+    START_BG --> BG
+
+    subgraph MAIN_FLOW["主采集流程 (5秒间隔)"]
+        RUNNER --> COLLECTOR["collector.LinuxCollector"]
+        COLLECTOR --> CPU["CollectCPUStat"]
+        CPU --> READ_BUF["从缓存读取"]
+        READ_BUF --> BUFFER
+        COLLECTOR --> MEM["CollectMeminfo"]
+        COLLECTOR --> DISK["CollectDisk"]
+        COLLECTOR --> NET["CollectNetinfo"]
     end
 
-    subgraph Collector["采集层 collector/"]
-        F["LinuxCollector.Collect(ctx)"]
-        G["collectViaLib(ctx)"]
-        H["collectViaCommand(ctx)"]
-    end
-
-    subgraph ProcFuncs["linux_proc.go 业务函数"]
-        I["CollectCPUStat(ctx)"]
-        J["CollectMeminfo(ctx)"]
-        K["CollectDisk(ctx)"]
-        L["CollectNetinfo(ctx)"]
-    end
-
-    subgraph SubFuncs["子函数"]
-        I1["collectCPUCores(ctx)\n读 /proc/cpuinfo"]
-        I2["collectCPUInfo(ctx)\n读 /proc/stat"]
-        I3["collectLoadAvg(ctx)\n读 /proc/loadavg"]
-        K1["readMounts(ctx)\n读 /proc/self/mountinfo"]
-        K2["readDiskStats(ctx)\n读 /proc/diskstats"]
-        K3["statFS(path)\nsyscall.Statfs 无需ctx"]
-    end
-
-    subgraph FileIO["I/O 层 pkg/utils/"]
-        U["ReadLinesOffsetNWithContext(ctx)\n每行检查 ctx.Err()"]
-    end
-
-    subgraph Alert["告警层 alert/"]
-        R["RuleChecker.Check(ctx)"]
-    end
-
-    subgraph UI["UI层 ui/"]
-        T["TUI.Render(ctx)"]
-    end
-
-    A -->|"rootCtx"| B
-    B --> C
-    C -->|"ctx.Done()"| D
-    C -->|"ticker.C"| E
-    E -->|"ctx"| F
-    F --> G
-    F -.->|"未来"| H
-
-    G -->|"goroutine + ctx"| I
-    G -->|"goroutine + ctx"| J
-    G -->|"goroutine + ctx"| K
-    G -->|"goroutine + ctx"| L
-
-    I --> I1
-    I --> I2
-    I --> I3
-    K --> K1
-    K --> K2
-    K --> K3
-
-    I1 --> U
-    I2 --> U
-    I3 --> U
-    J --> U
-    K1 --> U
-    K2 --> U
-    L --> U
-
-    E -->|"ctx + metrics"| R
-    E -->|"ctx + metrics"| T
-
-    style A fill:#e74c3c,color:#fff
-    style D fill:#e74c3c,color:#fff
-    style U fill:#2ecc71,color:#fff
-    style K3 fill:#95a5a6,color:#fff
-```
-图例说明：
-
-🔴 红色：Context 的起点和终点（信号监听 → 优雅退出）
-
-🟢 绿色：Context 的最终消费者（ReadLinesOffsetNWithContext 每行检查 ctx.Err()）
-
-灰色：不需要 ctx 的函数（statFS 单次 syscall，纳秒级返回）
-
-## 项目结构
-
-```
-tisminSRETool/
-├── cmd/tisminSRETool/          # 程序入口
-│   ├── main.go                 # 主程序入口（当前为空）
-│   └── debug.go                # 调试/测试入口
-├── configs/
-│   └── config.yaml             # 配置文件
-├── pkg/utils/                  # 公共工具包
-│   ├── convert.go              # 单位转换工具
-│   └── linereader.go           # 支持 Context 的文件行读取工具
-├── internal/                    # 内部业务逻辑
-│   ├── model/                  # 数据模型层
-│   │   ├── config.go           # 配置结构体
-│   │   ├── metrics.go          # 系统指标结构体
-│   │   ├── diagnostic.go       # 诊断结果结构体
-│   │   └── collector_error.go  # 采集错误结构体
-│   ├── collector/              # 指标采集器模块
-│   │   ├── interface.go       # Collector 接口定义
-│   │   ├── linux_collector.go # Linux 采集器入口
-│   │   └── linux_proc.go      # Linux 采集实现（/proc 文件系统）
-│   ├── diagnostic/             # 诊断模块
-│   │   ├── interface.go       # Diagnostic 接口
-│   │   └── diagnostic_Linux.go # Linux 诊断实现
-│   ├── alert/                  # 告警模块
-│   │   ├── interface.go       # Alert 接口
-│   │   ├── rules.go           # 告警规则检查器
-│   │   └── sender.go          # 邮件发送实现
-│   └── engine/                 # 调度引擎模块
-│       └── calculater.go      # 指标速率计算
-├── go.mod
-├── go.sum
-└── README.md
+    RUNNER --> ALERT["alert.RuleChecker / EmailSender"]
+    RUNNER --> EXPORTER["exporter.PrometheusExporter"]
+    MAIN --> HTTP["exporter.HTTPServer"]
+    HTTP --> PROM["Prometheus"]
+    PROM --> GRAFANA["Grafana"]
 ```
 
-## 核心模块
+### 核心架构要点
 
-### 1. 采集器模块 (`internal/collector/`)
+- **CPU 后台采集**: 独立 goroutine 以固定 100ms 间隔采样 `/proc/stat`
+- **环形缓存**: CPU 快照存入 2 槽位环形缓冲区，带时间戳
+- **主流程无阻塞**: 主采集器只读缓存，无 sleep、无阻塞
 
-通过 `Collector` 接口实现系统指标采集：
+### 运行流程
 
-```go
-type Collector interface {
-    Collect(ctx context.Context) (*model.Metrics, *model.CollectErrors)
-}
-```
+1. `main.go` 使用 Viper 加载配置并创建根上下文。
+2. `engine.Runner` 启动后台 CPU 采集器（启动一次，持续采样）。
+3. `engine.Runner` 立即执行一次采集，然后按 5 秒间隔循环采集。
+4. `LinuxCollector` 并发执行 CPU、内存、磁盘、网络采集。
+   - **CPU**: 从环形缓存读取（无阻塞）
+   - **内存/磁盘/网络**: 直接采集
+5. `Runner` 保存最近一次指标快照和采集错误。
+6. 告警模块基于最新快照做阈值判断，SMTP 配置完整时发送邮件。
+7. `PrometheusExporter` 周期性读取 `Runner.Snapshot()` 并刷新导出指标。
+8. `HTTPServer` 暴露 `/health`、`/status` 和配置中的 metrics 路径。
 
-**实现版本：**
-- `LinuxCollector`（`linux_collector.go`）：实现 `Collector` 的 Linux 采集入口
-- Linux proc 采集器（`linux_proc.go`）：直接读取 `/proc` 文件系统
+## HTTP 接口
 
-**采集指标：**
-| 类别 | 指标 |
-|------|------|
-| CPU | 核心数、使用率、每核使用率、负载（1/5/15分钟） |
-| 内存 | 总内存、空闲内存、可用内存、已用内存、Swap信息 |
-| 磁盘 | 挂载点、总容量、Inodes、IO读写 |
-| 网络 | 网卡名、接收/发送字节数、数据包数、错误数、丢包数 |
-| 进程 | PID、名称、CPU%、内存% |
+| 接口 | 说明 |
+|---|---|
+| `/health` | 存活检查，返回 `200 OK` |
+| `/status` | 返回最近一次采集状态 |
+| `/metrics` | 默认 Prometheus 指标端点 |
 
-### 2. 告警模块 (`internal/alert/`)
-
-**RuleChecker**（`rules.go`）：根据配置阈值检查指标
-
-**告警类型：**
-- CPU 使用率阈值
-- 内存使用率阈值
-- 磁盘使用率阈值
-- Inodes 使用率阈值
-- 网络带宽/丢包率/延迟阈值
-- TCP 连接状态阈值（TIME_WAIT、CLOSE_WAIT）
-
-**EmailSender**（`sender.go`）：通过 SMTP 发送告警邮件
-
-### 3. 引擎模块 (`internal/engine/`)
-
-**CalculateRate**（`calculater.go`）：计算连续采集之间的变化速率
-
-- CPU 使用率变化
-- 磁盘读写速度（字节/秒）
-- 网络收发速度（字节/秒）
-
-### 4. 诊断模块 (`internal/diagnostic/`)
-
-系统健康诊断接口（当前正在开发中）。
+其中 Prometheus 指标路径可通过 `prometheus.path` 配置修改。
 
 ## 配置说明
 
-### config.yaml
+默认配置文件：`configs/config.yaml`
 
-```yaml
-app:
-  name: "tisminSRETool"
-  version: "1.0.0"
-  refresh_interval: 5s
-  loglevel: "info"
-  log_path: "./app.log"
+关键配置块：
 
-diagnostic:
-  enabled: true
-  show_top_n_list: 10
+- `app`：服务名、版本、采集间隔、日志
+- `http`：监听地址和超时
+- `prometheus`：是否启用以及 metrics 路径
+- `alert`：告警阈值
+- `email`：SMTP 配置
+- `diagnostic`：为后续诊断能力预留，当前未接入主运行链路
 
-alert:
-  enabled: true
-  cpu_threshold: 80.0
-  memory_threshold: 80.0
-  disk_threshold: 85.0
-  inodes_threshold: 80.0
-  # ... 更多阈值配置
-```
-
-### 配置结构体 (`internal/model/config.go`)
-
-| 结构体 | 说明 |
-|--------|------|
-| `Config` | 主配置容器 |
-| `Appconfig` | 应用设置（名称、版本、刷新间隔、日志） |
-| `DiagnosticConfig` | 诊断模块设置 |
-| `AlertConfig` | 告警阈值配置 |
-| `EmailConfig` | SMTP 邮件配置 |
-
-## 使用说明
-
-### 快速开始
+指定配置文件运行：
 
 ```bash
-# 运行调试/测试模式
-go run cmd/tisminSRETool/debug.go
-
-# 构建
-go build -o tisminSRETool cmd/tisminSRETool/main.go
+go run ./cmd/tisminSRETool -config configs/config.yaml
 ```
 
-### 调试入口
+查看版本：
 
-`debug.go` 文件提供了测试接口：
-
-```go
-func main() {
-    c := &collector.LinuxCollector{}
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-
-    metrics, collectErrs := c.Collect(ctx)
-    // 将指标输出为 JSON
-}
+```bash
+go run ./cmd/tisminSRETool -version
 ```
 
-## 开发指南
+## 本地运行
 
-### 添加新的指标
+运行测试：
 
-1. 在 `internal/model/metrics.go` 中添加新的字段
-2. 在采集器实现中添加对应的采集逻辑
-3. 使用 goroutine 并行采集
+```bash
+go test ./...
+```
 
-### 添加新的告警规则
+启动主服务：
 
-1. 在 `internal/model/config.go` 的 `AlertConfig` 中添加阈值字段
-2. 在 `internal/alert/rules.go` 的 `Check` 方法中添加对应的检查逻辑
-3. 在 `configs/config.yaml` 中添加对应的配置项
+```bash
+go run ./cmd/tisminSRETool
+```
 
-### 平台支持
+检查接口：
 
-Linux 采集能力统一放在 `internal/collector/` 下维护。
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/status
+curl http://localhost:8080/metrics
+```
 
-## 依赖项
+启动调试模式：
 
-- [gopsutil](https://github.com/shirou/gopsutil)：跨平台系统指标采集库
-- Go 1.25.6+
+```bash
+go run ./cmd/debug_tool
+```
 
-## 许可证
+## Docker Compose
+
+仓库内置了一套示例栈：
+
+- `tisminSRETool`：`8080`
+- Prometheus：`9090`
+- Grafana：`3000`
+
+启动方式：
+
+```bash
+docker compose up --build
+```
+
+`docker-compose.yml` 中 Grafana 默认账号：
+
+- 用户名：`admin`
+- 密码：`admin123`
+
+## 目录结构
+
+```text
+cmd/
+  debug_tool/            调试运行入口
+  tisminSRETool/         主服务入口
+configs/                 服务配置
+deploy/                  Prometheus 和 Grafana 配置
+internal/alert/          告警规则与邮件发送
+internal/collector/      Linux 指标采集
+internal/engine/         调度与快照状态
+internal/exporter/       Prometheus exporter 与 HTTP 服务
+internal/model/          配置与指标模型
+pkg/utils/               带 context 的文件读取工具
+```
+
+## 当前限制
+
+- 仅支持 Linux，非 Linux 环境不能得到有效主机指标
+- 程序只保存最近一次快照，不负责历史数据存储
+- `diagnostic` 代码目前未接入主运行流程
+- `ProcStat` 已在模型中定义，但当前主流程并未采集进程级指标
+- 在 Docker 中运行时，导出的 `host` 标签默认是容器主机名；如果不覆盖，Grafana 中通常会显示容器名或容器 ID
+
+## 相关文档
+
+- English README: `README.md`
+- 当前架构与 Context 流程：`CURRENT_ARCHITECTURE_CONTEXT_FLOW_ZH.md`
+
+## License
 
 MIT
-
----
-
-[English Version](./README.md)

@@ -2,10 +2,10 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "develop/**", "feature/**" ]
+    branches: [ "main", "develop", "develop/**", "feature/**" ]
     tags: [ "v*" ] # 当推送 v0.1.0 等标签时触发镜像构建
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop", "develop/**", "feature/**" ]
 
 jobs:
   test-and-lint:
@@ -28,16 +28,17 @@ jobs:
       - name: Static Analysis (Linter)
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.59.1
-          args: --modules-download-mode=vendor
+          version: v1.64.5
+          # 告诉 linter 使用本地 vendor 目录，避免重复下载和元数据缺失
+          args: --modules-download-mode=vendor --timeout=5m
 
       - name: Run Tests with Race Detector
         run: go test -v -race ./...
 
   build-and-push-image:
-    # 只有在代码通过了上面的测试和 Linter，且推送了标签时，才执行这一步
+    # 只有在代码通过了上面的测试和 Linter，且推送了标签或 develop 分支时，才执行这一步
     needs: test-and-lint
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
