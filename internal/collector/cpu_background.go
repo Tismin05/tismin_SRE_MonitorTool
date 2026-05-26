@@ -44,7 +44,7 @@ func initCPUBuffer() {
 	}
 }
 
-// 启动后台 CPU 采集 goroutine
+// StartCPUCollector 启动后台 CPU 采集 goroutine
 // sampleInterval: 采样间隔（如 100ms）
 // ctx: 上下文，用于优雅停止
 func StartCPUCollector(ctx context.Context, sampleInterval time.Duration) {
@@ -127,7 +127,7 @@ func GetCPUUsageFromBuffer() ([]float64, uint64, uint64, error) {
 	snap1 := cpuBuffer.snapshots[1]
 	cpuBuffer.mu.RUnlock()
 
-	// 检查是否有有效数据
+	// 检查是否有有效数据（至少一个非零时间戳）
 	if snap0.timestamp.IsZero() && snap1.timestamp.IsZero() {
 		return nil, 0, 0, nil
 	}
@@ -137,34 +137,44 @@ func GetCPUUsageFromBuffer() ([]float64, uint64, uint64, error) {
 		snap0, snap1 = snap1, snap0
 	}
 
+	// 检查 CPU 核心数是否变化
+	if len(snap0.perCPU) != len(snap1.perCPU) {
+		// 核心数变化时，跳过 perCPU 计算，只返回总体
+		log.Printf("[WARN] CPU core count changed: %d -> %d, skip perCPU",
+			len(snap0.perCPU), len(snap1.perCPU))
+	}
+
 	// 计算总体的 CPU 使用率
 	diffTotal := snap1.total - snap0.total
+	diffIdle := snap1.idle - snap0.idle
 
 	var totalTicks, idleTicks uint64
 	if diffTotal > 0 {
-		totalTicks = uint64(snap1.total)
-		idleTicks = uint64(snap1.idle)
+		totalTicks = uint64(diffTotal)
+		idleTicks = uint64(diffIdle)
 	}
 
-	// 计算每个 CPU 核心的使用率
+	// 计算每个 CPU 核心的使用率（仅当核心数一致时）
 	perCPUUsage := make([]float64, 0, len(snap1.perCPU))
-	for i := 0; i < len(snap1.perCPU) && i < len(snap0.perCPU); i++ {
-		diffCpuTotal := snap1.perCPU[i].total - snap0.perCPU[i].total
-		diffCpuIdle := snap1.perCPU[i].idle - snap0.perCPU[i].idle
+	if len(snap0.perCPU) == len(snap1.perCPU) && len(snap1.perCPU) > 0 {
+		for i := 0; i < len(snap1.perCPU); i++ {
+			diffCpuTotal := snap1.perCPU[i].total - snap0.perCPU[i].total
+			diffCpuIdle := snap1.perCPU[i].idle - snap0.perCPU[i].idle
 
-		if diffCpuTotal <= 0 {
-			perCPUUsage = append(perCPUUsage, 0)
-			continue
-		}
+			if diffCpuTotal <= 0 {
+				perCPUUsage = append(perCPUUsage, 0)
+				continue
+			}
 
-		usage := (diffCpuTotal - diffCpuIdle) / diffCpuTotal * 100
-		if usage < 0 {
-			usage = 0
+			usage := (diffCpuTotal - diffCpuIdle) / diffCpuTotal * 100
+			if usage < 0 {
+				usage = 0
+			}
+			if usage > 100 {
+				usage = 100
+			}
+			perCPUUsage = append(perCPUUsage, usage)
 		}
-		if usage > 100 {
-			usage = 100
-		}
-		perCPUUsage = append(perCPUUsage, usage)
 	}
 
 	if len(perCPUUsage) == 0 {

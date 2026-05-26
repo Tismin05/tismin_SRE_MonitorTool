@@ -14,6 +14,7 @@ import (
 	"tisminSRETool/internal/engine"
 	"tisminSRETool/internal/exporter"
 	"tisminSRETool/internal/model"
+	"tisminSRETool/internal/pipeline"
 
 	"github.com/spf13/viper"
 )
@@ -21,6 +22,7 @@ import (
 var (
 	configPath  = flag.String("config", "configs/config.yaml", "path to config file")
 	showVersion = flag.Bool("version", false, "show version")
+	usePipeline = flag.Bool("pipeline", false, "use V2 pipeline architecture")
 )
 
 func main() {
@@ -31,6 +33,17 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Use V2 pipeline if flag is set
+	if *usePipeline {
+		runPipelineV2()
+		return
+	}
+
+	// V1 original flow
+	runV1()
+}
+
+func runV1() {
 	// config 和日志加载
 	cfg := loadConfig()
 	logger := setupLogger(cfg.App)
@@ -70,14 +83,48 @@ func main() {
 		}()
 	}
 
+	// 优雅退出
 	sigsCh := make(chan os.Signal, 1)
 	signal.Notify(sigsCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigsCh
+
+	// 等待信号或HTTP server错误
+	select {
+	case sig := <-sigsCh:
+		logger.Printf("received signal: %v", sig)
+	case <-ctx.Done():
+		// HTTP server 异常退出
+	}
 
 	logger.Println("shutting down...")
 	cancel()
-	time.Sleep(2 * time.Second)
+
+	// 等待所有后台任务完成（最多10秒）
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// 等待 runner 停止
+	runnerDone := make(chan struct{})
+	go func() {
+		// runner.Run 使用 ctx，cancel 后会自然停止
+		runner.WaitDone()
+		close(runnerDone)
+	}()
+
+	select {
+	case <-runnerDone:
+		logger.Println("runner stopped")
+	case <-shutdownCtx.Done():
+		logger.Println("shutdown timeout, force exit")
+	}
+
 	logger.Println("stopped")
+}
+
+func runPipelineV2() {
+	p := pipeline.NewPipeline(pipeline.DefaultConfig())
+	if err := p.Run(); err != nil {
+		log.Printf("pipeline error: %v", err)
+	}
 }
 
 func loadConfig() *model.Config {

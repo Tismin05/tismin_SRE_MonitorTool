@@ -140,13 +140,26 @@ func (c *LinuxCollector) Collect(ctx context.Context) (*model.Metrics, *model.Co
 		close(done)
 	}()
 
+	timeoutErr := ctx.Err()
 	select {
 	case <-ctx.Done():
+		// Context cancelled/timeout - record error for all pending collectors
 		errMu.Lock()
-		// Determine which ones didn't finish purely conceptually, or just report a general timeout
-		errs.CPU = append(errs.CPU, fmt.Errorf("collection aborted or timed out: %w", ctx.Err()))
+		if atomic.LoadInt32(&c.cpuActive) == 1 {
+			errs.CPU = append(errs.CPU, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
+		}
+		if atomic.LoadInt32(&c.memActive) == 1 {
+			errs.Mem = append(errs.Mem, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
+		}
+		if atomic.LoadInt32(&c.diskActive) == 1 {
+			errs.Disk = append(errs.Disk, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
+		}
+		if atomic.LoadInt32(&c.netActive) == 1 {
+			errs.Net = append(errs.Net, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
+		}
 		errMu.Unlock()
 	case <-done:
+		// All collectors finished normally
 	}
 
 	metrics.UpdateTimestamp = time.Now().Format(time.RFC3339)
