@@ -34,7 +34,7 @@ func outputConsole(metrics *model.Metrics, alarms interface{}) {
 
 	// Net
 	for _, net := range metrics.Net {
-		fmt.Printf("\n[Net]  %s: RX=%.0f  TX=%.0f  Errors=RX:%d TX:%d  Dropped=RX:%d TX:%d\n",
+		fmt.Printf("\n[Net]  %s: RX=%d  TX=%d  Errors=RX:%d TX:%d  Dropped=RX:%d TX:%d\n",
 			net.Name, net.RxBytes, net.TxBytes, net.RxErrors, net.TxErrors, net.RxDropped, net.TxDropped)
 	}
 

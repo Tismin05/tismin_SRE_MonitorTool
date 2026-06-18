@@ -1,8 +1,11 @@
 # Binary output
-tisminSRETool
-tisminSRETool.exe
+/tisminSRETool
+/tisminSRETool.exe
 *.exe
-bin/
+dist/
+run/
+logs/
+.gocache/
 
 # IDE
 .idea/
@@ -13,7 +16,9 @@ bin/
 # Go
 vendor/
 coverage.txt
+coverage.out
 *.test
+*.pid
 
 # macOS
 .DS_Store

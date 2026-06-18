@@ -1,0 +1,21 @@
+app:
+  name: "collector-agent"
+  version: "1.0.0"
+  refresh_interval: "5s"
+  loglevel: "info"
+  log_path: "./logs/collector-agent.log"
+
+http:
+  listen: ":8080"
+  timeout: "30s"
+
+prometheus:
+  enabled: true
+  path: "/metrics"
+
+alert:
+  enabled: false
+
+diagnostic:
+  enabled: false
+

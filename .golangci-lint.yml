@@ -1,6 +1,6 @@
 run:
   timeout: 5m
-  modules-download-mode: vender
+  modules-download-mode: vendor
 
 linters:
   disable-all: true

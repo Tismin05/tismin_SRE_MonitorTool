@@ -14,7 +14,6 @@ import (
 	"tisminSRETool/internal/engine"
 	"tisminSRETool/internal/exporter"
 	"tisminSRETool/internal/model"
-	"tisminSRETool/internal/pipeline"
 
 	"github.com/spf13/viper"
 )
@@ -22,7 +21,6 @@ import (
 var (
 	configPath  = flag.String("config", "configs/config.yaml", "path to config file")
 	showVersion = flag.Bool("version", false, "show version")
-	usePipeline = flag.Bool("pipeline", false, "use V2 pipeline architecture")
 )
 
 func main() {
@@ -31,12 +29,6 @@ func main() {
 	if *showVersion {
 		fmt.Println("tisminSRETool v0.1.0")
 		os.Exit(0)
-	}
-
-	// Use V2 pipeline if flag is set
-	if *usePipeline {
-		runPipelineV2()
-		return
 	}
 
 	// V1 original flow
@@ -118,13 +110,6 @@ func runV1() {
 	}
 
 	logger.Println("stopped")
-}
-
-func runPipelineV2() {
-	p := pipeline.NewPipeline(pipeline.DefaultConfig())
-	if err := p.Run(); err != nil {
-		log.Printf("pipeline error: %v", err)
-	}
 }
 
 func loadConfig() *model.Config {
