@@ -13,9 +13,5 @@ prometheus:
   enabled: true
   path: "/metrics"
 
-alert:
-  enabled: false
-
 diagnostic:
   enabled: false
-

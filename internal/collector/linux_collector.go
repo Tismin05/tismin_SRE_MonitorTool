@@ -5,22 +5,63 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"tisminSRETool/internal/model"
 )
 
 type LinuxCollector struct {
-	cpuActive  int32
-	memActive  int32
-	diskActive int32
-	netActive  int32
+	samplersOnce sync.Once
+	cpuSampler   *cpuSampler
+	netSampler   *netSampler
 }
 
 var _ Collector = (*LinuxCollector)(nil)
+var _ BackgroundCollector = (*LinuxCollector)(nil)
+
+// RunBackground maintains the short-window CPU and network samples used to
+// calculate utilization and transfer rates. It blocks until ctx is canceled.
+func (c *LinuxCollector) RunBackground(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.initSamplers()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		c.cpuSampler.run(ctx, 100*time.Millisecond)
+	}()
+	go func() {
+		defer wg.Done()
+		c.netSampler.run(ctx, 100*time.Millisecond)
+	}()
+	wg.Wait()
+}
+
+func (c *LinuxCollector) initSamplers() {
+	c.samplersOnce.Do(func() {
+		c.cpuSampler = &cpuSampler{}
+		c.netSampler = &netSampler{}
+	})
+}
+
+type collectionResult struct {
+	subsystem string
+	cpu       model.CPUStat
+	mem       *model.MemoryStat
+	disk      []model.DiskStat
+	net       []model.NetStat
+	err       error
+}
 
 func (c *LinuxCollector) Collect(ctx context.Context) (*model.Metrics, *model.CollectErrors) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.initSamplers()
+
 	host := "localhost"
 	if h, err := os.Hostname(); err == nil && h != "" {
 		host = h
@@ -31,135 +72,53 @@ func (c *LinuxCollector) Collect(ctx context.Context) (*model.Metrics, *model.Co
 		UpdateTimestamp: time.Now().Format(time.RFC3339),
 	}
 	errs := &model.CollectErrors{}
+	results := make(chan collectionResult, 4)
 
 	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var errMu sync.Mutex
-
-	if atomic.CompareAndSwapInt32(&c.cpuActive, 0, 1) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer atomic.StoreInt32(&c.cpuActive, 0)
-			
-			cpuStat, err := CollectCPUStat(ctx)
-			if err != nil {
-				errMu.Lock()
-				errs.CPU = append(errs.CPU, err)
-				errMu.Unlock()
-				return
-			}
-			mu.Lock()
-			metrics.CPU = cpuStat
-			mu.Unlock()
-		}()
-	} else {
-		errMu.Lock()
-		errs.CPU = append(errs.CPU, fmt.Errorf("previous cpu collection is still hanging, skipped"))
-		errMu.Unlock()
-	}
-
-	if atomic.CompareAndSwapInt32(&c.memActive, 0, 1) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer atomic.StoreInt32(&c.memActive, 0)
-			
-			memStat, err := CollectMeminfo(ctx)
-			if err != nil {
-				errMu.Lock()
-				errs.Mem = append(errs.Mem, err)
-				errMu.Unlock()
-				return
-			}
-			if memStat == nil {
-				errMu.Lock()
-				errs.Mem = append(errs.Mem, fmt.Errorf("memory stat is nil"))
-				errMu.Unlock()
-				return
-			}
-			mu.Lock()
-			metrics.Mem = *memStat
-			mu.Unlock()
-		}()
-	} else {
-		errMu.Lock()
-		errs.Mem = append(errs.Mem, fmt.Errorf("previous memory collection is still hanging, skipped"))
-		errMu.Unlock()
-	}
-
-	if atomic.CompareAndSwapInt32(&c.diskActive, 0, 1) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer atomic.StoreInt32(&c.diskActive, 0)
-			
-			diskStat, err := CollectDisk(ctx)
-			if err != nil {
-				errMu.Lock()
-				errs.Disk = append(errs.Disk, err)
-				errMu.Unlock()
-				return
-			}
-			mu.Lock()
-			metrics.Disk = diskStat
-			mu.Unlock()
-		}()
-	} else {
-		errMu.Lock()
-		errs.Disk = append(errs.Disk, fmt.Errorf("previous disk collection is still hanging, skipped"))
-		errMu.Unlock()
-	}
-
-	if atomic.CompareAndSwapInt32(&c.netActive, 0, 1) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer atomic.StoreInt32(&c.netActive, 0)
-			
-			netStat, err := CollectNetinfo(ctx)
-			if err != nil {
-				errMu.Lock()
-				errs.Net = append(errs.Net, err)
-				errMu.Unlock()
-				return
-			}
-			mu.Lock()
-			metrics.Net = netStat
-			mu.Unlock()
-		}()
-	} else {
-		errMu.Lock()
-		errs.Net = append(errs.Net, fmt.Errorf("previous network collection is still hanging, skipped"))
-		errMu.Unlock()
-	}
-
-	done := make(chan struct{})
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		value, err := collectCPUStat(ctx, c.cpuSampler)
+		results <- collectionResult{subsystem: "cpu", cpu: value, err: err}
+	}()
+	go func() {
+		defer wg.Done()
+		value, err := CollectMeminfo(ctx)
+		if err == nil && value == nil {
+			err = fmt.Errorf("memory stat is nil")
+		}
+		results <- collectionResult{subsystem: "memory", mem: value, err: err}
+	}()
+	go func() {
+		defer wg.Done()
+		value, err := CollectDisk(ctx)
+		results <- collectionResult{subsystem: "disk", disk: value, err: err}
+	}()
+	go func() {
+		defer wg.Done()
+		value, err := collectNetinfo(ctx, c.netSampler)
+		results <- collectionResult{subsystem: "network", net: value, err: err}
+	}()
 	go func() {
 		wg.Wait()
-		close(done)
+		close(results)
 	}()
 
-	timeoutErr := ctx.Err()
-	select {
-	case <-ctx.Done():
-		// Context cancelled/timeout - record error for all pending collectors
-		errMu.Lock()
-		if atomic.LoadInt32(&c.cpuActive) == 1 {
-			errs.CPU = append(errs.CPU, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
+	for result := range results {
+		if result.err != nil {
+			appendCollectError(errs, result.subsystem, result.err)
+			continue
 		}
-		if atomic.LoadInt32(&c.memActive) == 1 {
-			errs.Mem = append(errs.Mem, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
+		switch result.subsystem {
+		case "cpu":
+			metrics.CPU = result.cpu
+		case "memory":
+			metrics.Mem = *result.mem
+		case "disk":
+			metrics.Disk = result.disk
+		case "network":
+			metrics.Net = result.net
 		}
-		if atomic.LoadInt32(&c.diskActive) == 1 {
-			errs.Disk = append(errs.Disk, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
-		}
-		if atomic.LoadInt32(&c.netActive) == 1 {
-			errs.Net = append(errs.Net, fmt.Errorf("collection aborted or timed out: %w", timeoutErr))
-		}
-		errMu.Unlock()
-	case <-done:
-		// All collectors finished normally
 	}
 
 	metrics.UpdateTimestamp = time.Now().Format(time.RFC3339)
@@ -167,4 +126,17 @@ func (c *LinuxCollector) Collect(ctx context.Context) (*model.Metrics, *model.Co
 		return metrics, nil
 	}
 	return metrics, errs
+}
+
+func appendCollectError(errs *model.CollectErrors, subsystem string, err error) {
+	switch subsystem {
+	case "cpu":
+		errs.CPU = append(errs.CPU, err)
+	case "memory":
+		errs.Mem = append(errs.Mem, err)
+	case "disk":
+		errs.Disk = append(errs.Disk, err)
+	case "network":
+		errs.Net = append(errs.Net, err)
+	}
 }

@@ -2,7 +2,7 @@ package exporter
 
 import (
 	"context"
-	"log"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -19,48 +19,59 @@ type HTTPServer struct {
 	runner      *engine.Runner
 }
 
-func NewHTTPServer(config model.HTTPConfig, metricsPath string, runner *engine.Runner) *HTTPServer {
+func NewHTTPServer(config model.HTTPConfig, metricsPath string, runner *engine.Runner, metricsHandlers ...http.Handler) *HTTPServer {
 	if metricsPath == "" {
 		metricsPath = "/metrics"
 	}
 	if !strings.HasPrefix(metricsPath, "/") {
 		metricsPath = "/" + metricsPath
 	}
+	if metricsPath == "/health" || metricsPath == "/status" {
+		metricsPath = "/metrics"
+	}
 
 	mux := http.NewServeMux()
 
-	// Prometheus metrics endpoint
-	mux.Handle(metricsPath, promhttp.Handler())
+	metricsHandler := http.Handler(promhttp.Handler())
+	if len(metricsHandlers) > 0 {
+		metricsHandler = metricsHandlers[0]
+	}
+	if metricsHandler != nil {
+		mux.Handle(metricsPath, metricsHandler)
+	}
 
 	// Health Check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("OK")); err != nil {
-			log.Printf("failed to write response: %v", err)
-		}
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	// Status endpoint
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if runner == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable"})
+			return
+		}
 		metrics, errs, at := runner.Snapshot()
-		w.Header().Set("Content-Type", "application/json")
 
 		if errs != nil && errs.HasError() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			if _, err := w.Write([]byte(`{"status":"unavailable"}`)); err != nil {
-				log.Printf("failed to write response: %v", err)
-			}
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status":      "unavailable",
+				"last_update": formatTimestamp(at),
+				"errors":      collectErrorCounts(errs),
+			})
 			return
 		}
 
 		if metrics == nil {
-			w.WriteHeader(http.StatusNoContent)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "starting"})
 			return
 		}
 
-		if _, err := w.Write([]byte(`{"status":"ok","last_update":"` + at.Format(time.RFC3339) + `"}`)); err != nil {
-			log.Printf("failed to write response: %v", err)
-		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":      "ok",
+			"last_update": formatTimestamp(at),
+		})
 	})
 
 	return &HTTPServer{
@@ -76,6 +87,10 @@ func NewHTTPServer(config model.HTTPConfig, metricsPath string, runner *engine.R
 	}
 }
 
+func (s *HTTPServer) Handler() http.Handler {
+	return s.server.Handler
+}
+
 func (s *HTTPServer) Start(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
@@ -89,8 +104,30 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return s.server.Shutdown(shutdownCtx)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func formatTimestamp(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.Format(time.RFC3339)
+}
+
+func collectErrorCounts(errs *model.CollectErrors) map[string]int {
+	return map[string]int{
+		"cpu":     len(errs.CPU),
+		"memory":  len(errs.Mem),
+		"disk":    len(errs.Disk),
+		"network": len(errs.Net),
 	}
 }

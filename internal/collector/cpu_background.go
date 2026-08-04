@@ -29,48 +29,37 @@ type cpuRingBuffer struct {
 	cores     int
 }
 
-// 全局 CPU 环形缓存
-var cpuBuffer *cpuRingBuffer
-
-// 初始化环形缓存
-func initCPUBuffer() {
-	cpuBuffer = &cpuRingBuffer{
-		snapshots: [2]cpuCacheSnapshot{
-			{timestamp: time.Now()},
-			{timestamp: time.Now()},
-		},
-		index: 0,
-		cores: 0,
-	}
+type cpuSampler struct {
+	buffer cpuRingBuffer
 }
 
-// StartCPUCollector 启动后台 CPU 采集 goroutine
+// run 启动当前 LinuxCollector 专属的 CPU 采样循环。
 // sampleInterval: 采样间隔（如 100ms）
 // ctx: 上下文，用于优雅停止
-func StartCPUCollector(ctx context.Context, sampleInterval time.Duration) {
-	if cpuBuffer == nil {
-		initCPUBuffer()
+func (s *cpuSampler) run(ctx context.Context, sampleInterval time.Duration) {
+	if sampleInterval <= 0 {
+		sampleInterval = 100 * time.Millisecond
 	}
 
 	ticker := time.NewTicker(sampleInterval)
 	defer ticker.Stop()
 
 	// 立即执行一次采集
-	collectToBuffer(ctx)
+	s.collect(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			collectToBuffer(ctx)
+			s.collect(ctx)
 		}
 	}
 }
 
 // 采集快照并存入环形缓冲区
-func collectToBuffer(ctx context.Context) {
-	snapshot, err := readCPUSnapshotWithContext(ctx)
+func (s *cpuSampler) collect(ctx context.Context) {
+	snapshot, err := s.readSnapshot(ctx)
 	if err != nil {
 		if err != context.Canceled && err != context.DeadlineExceeded {
 			log.Printf("[WARN] CPU background collect failed: %v", err)
@@ -78,21 +67,24 @@ func collectToBuffer(ctx context.Context) {
 		return // 静默失败，不阻塞主流程
 	}
 
-	cpuBuffer.mu.Lock()
+	s.buffer.mu.Lock()
 	// 写入当前 index 位置，然后切换到下一个位置
-	cpuBuffer.snapshots[cpuBuffer.index] = snapshot
-	cpuBuffer.index = (cpuBuffer.index + 1) % 2 // 0 -> 1 -> 0 循环
+	s.buffer.snapshots[s.buffer.index] = snapshot
+	s.buffer.index = (s.buffer.index + 1) % 2 // 0 -> 1 -> 0 循环
 
 	// 记录核心数
-	if cpuBuffer.cores == 0 && len(snapshot.perCPU) > 0 {
-		cpuBuffer.cores = len(snapshot.perCPU)
+	if s.buffer.cores == 0 && len(snapshot.perCPU) > 0 {
+		s.buffer.cores = len(snapshot.perCPU)
 	}
-	cpuBuffer.mu.Unlock()
+	s.buffer.mu.Unlock()
 }
 
 // 读取单次快照（不计算，用于后台采集）
-func readCPUSnapshotWithContext(ctx context.Context) (cpuCacheSnapshot, error) {
-	overall, perCPU, err := readCPUSnapshots(ctx, cpuBuffer.cores)
+func (s *cpuSampler) readSnapshot(ctx context.Context) (cpuCacheSnapshot, error) {
+	s.buffer.mu.RLock()
+	cores := s.buffer.cores
+	s.buffer.mu.RUnlock()
+	overall, perCPU, err := readCPUSnapshots(ctx, cores)
 	if err != nil {
 		return cpuCacheSnapshot{}, err
 	}
@@ -117,15 +109,11 @@ func readCPUSnapshotWithContext(ctx context.Context) (cpuCacheSnapshot, error) {
 
 // 从环形缓冲区读取并计算 CPU 使用率（主流程调用）
 // 返回: perCPU使用率, 总tick, 空闲tick, 错误
-func GetCPUUsageFromBuffer() ([]float64, uint64, uint64, error) {
-	if cpuBuffer == nil {
-		return nil, 0, 0, nil // 返回空，不阻塞
-	}
-
-	cpuBuffer.mu.RLock()
-	snap0 := cpuBuffer.snapshots[0]
-	snap1 := cpuBuffer.snapshots[1]
-	cpuBuffer.mu.RUnlock()
+func (s *cpuSampler) usage() ([]float64, uint64, uint64, error) {
+	s.buffer.mu.RLock()
+	snap0 := s.buffer.snapshots[0]
+	snap1 := s.buffer.snapshots[1]
+	s.buffer.mu.RUnlock()
 
 	// 检查是否有有效数据（至少一个非零时间戳）
 	if snap0.timestamp.IsZero() && snap1.timestamp.IsZero() {

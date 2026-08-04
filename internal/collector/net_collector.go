@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"tisminSRETool/internal/model"
 	"tisminSRETool/pkg/utils"
@@ -12,8 +13,16 @@ import (
 
 // CollectNetinfo 采集网络信息
 func CollectNetinfo(ctx context.Context) ([]model.NetStat, error) {
+	return collectNetinfo(ctx, nil)
+}
+
+func collectNetinfo(ctx context.Context, sampler *netSampler) ([]model.NetStat, error) {
 	// 尝试从环形缓存读取
-	snap0, snap1, t0, t1 := GetNetSnapshots()
+	var snap0, snap1 []netSnapshot
+	var t0, t1 time.Time
+	if sampler != nil {
+		snap0, snap1, t0, t1 = sampler.snapshots()
+	}
 
 	if len(snap0) > 0 && len(snap1) > 0 && !t0.IsZero() && !t1.IsZero() {
 		// 使用缓存计算速率
@@ -130,29 +139,21 @@ func calcNetStatsFromSnapshots(snap0, snap1 []netSnapshot, elapsed float64) ([]m
 			continue
 		}
 
-		rxBytes := s1.rxBytes - s0.rxBytes
-		txBytes := s1.txBytes - s0.txBytes
-		rxPackets := s1.rxPackets - s0.rxPackets
-		txPackets := s1.txPackets - s0.txPackets
-
-		// 处理溢出
-		if s1.rxBytes < s0.rxBytes {
-			rxBytes = s1.rxBytes
-		}
-		if s1.txBytes < s0.txBytes {
-			txBytes = s1.txBytes
-		}
+		rxBytesDelta := uint64Diff(s1.rxBytes, s0.rxBytes)
+		txBytesDelta := uint64Diff(s1.txBytes, s0.txBytes)
 
 		result = append(result, model.NetStat{
-			Name:        s1.iface,
-			RxBytes:     uint64(float64(rxBytes) / elapsed),
-			TxBytes:     uint64(float64(txBytes) / elapsed),
-			RxPackets:   uint64(float64(rxPackets) / elapsed),
-			TxPackets:   uint64(float64(txPackets) / elapsed),
-			RxErrors:    s1.rxErrors - s0.rxErrors,
-			TxErrors:    s1.txErrors - s0.txErrors,
-			RxDropped:   s1.rxDrops - s0.rxDrops,
-			TxDropped:   s1.txDrops - s0.txDrops,
+			Name:      s1.iface,
+			RxBytes:   s1.rxBytes,
+			TxBytes:   s1.txBytes,
+			RxPackets: s1.rxPackets,
+			TxPackets: s1.txPackets,
+			RxErrors:  s1.rxErrors,
+			TxErrors:  s1.txErrors,
+			RxDropped: s1.rxDrops,
+			TxDropped: s1.txDrops,
+			RxSpeed:   float64(rxBytesDelta) / elapsed,
+			TxSpeed:   float64(txBytesDelta) / elapsed,
 		})
 	}
 

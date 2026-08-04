@@ -41,13 +41,21 @@ func collectCPUCores(ctx context.Context) (cores int, err error) {
 
 // CollectCPUStat 整合CPU逻辑
 func CollectCPUStat(ctx context.Context) (model.CPUStat, error) {
+	return collectCPUStat(ctx, nil)
+}
+
+func collectCPUStat(ctx context.Context, sampler *cpuSampler) (model.CPUStat, error) {
 	cores, err := collectCPUCores(ctx)
 	if err != nil {
 		return model.CPUStat{}, err
 	}
 
 	// 从环形缓存读取 CPU 使用率（无阻塞）
-	perCPU, totalTicks, idleTicks, err := GetCPUUsageFromBuffer()
+	var perCPU []float64
+	var totalTicks, idleTicks uint64
+	if sampler != nil {
+		perCPU, totalTicks, idleTicks, err = sampler.usage()
+	}
 	if err != nil || len(perCPU) == 0 {
 		// 如果缓存中没有数据，回退到旧的采集方式
 		perCPU, totalTicks, idleTicks, err = collectCPUInfo(ctx, cores)

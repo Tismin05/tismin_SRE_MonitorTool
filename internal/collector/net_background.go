@@ -32,41 +32,34 @@ type netRingBuffer struct {
 	mu        sync.RWMutex
 }
 
-// 全局网络环形缓存
-var netBuffer *netRingBuffer
-
-// 初始化网络环形缓存
-func initNetBuffer() {
-	netBuffer = &netRingBuffer{
-		snapshots: [2][]netSnapshot{},
-		index:     0,
-	}
+type netSampler struct {
+	buffer netRingBuffer
 }
 
 // 启动后台网络采集 goroutine
-func StartNetCollector(ctx context.Context, sampleInterval time.Duration) {
-	if netBuffer == nil {
-		initNetBuffer()
+func (s *netSampler) run(ctx context.Context, sampleInterval time.Duration) {
+	if sampleInterval <= 0 {
+		sampleInterval = 100 * time.Millisecond
 	}
 
 	ticker := time.NewTicker(sampleInterval)
 	defer ticker.Stop()
 
 	// 立即执行一次采集
-	collectNetToBuffer(ctx)
+	s.collect(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			collectNetToBuffer(ctx)
+			s.collect(ctx)
 		}
 	}
 }
 
 // 采集网络快照并存入环形缓冲区
-func collectNetToBuffer(ctx context.Context) {
+func (s *netSampler) collect(ctx context.Context) {
 	snapshot, err := readNetSnapshotWithContext(ctx)
 	if err != nil {
 		if err != context.Canceled && err != context.DeadlineExceeded {
@@ -75,10 +68,10 @@ func collectNetToBuffer(ctx context.Context) {
 		return // 静默失败
 	}
 
-	netBuffer.mu.Lock()
-	netBuffer.snapshots[netBuffer.index] = snapshot
-	netBuffer.index = (netBuffer.index + 1) % 2
-	netBuffer.mu.Unlock()
+	s.buffer.mu.Lock()
+	s.buffer.snapshots[s.buffer.index] = snapshot
+	s.buffer.index = (s.buffer.index + 1) % 2
+	s.buffer.mu.Unlock()
 }
 
 // 读取网络快照
@@ -139,15 +132,11 @@ func readNetSnapshotWithContext(ctx context.Context) ([]netSnapshot, error) {
 
 // 从网络环形缓冲区读取原始快照（主流程调用）
 // 返回两个快照和时间差，由 CollectNetinfo 计算速率
-func GetNetSnapshots() ([]netSnapshot, []netSnapshot, time.Time, time.Time) {
-	if netBuffer == nil {
-		return nil, nil, time.Time{}, time.Time{}
-	}
-
-	netBuffer.mu.RLock()
-	snap0 := netBuffer.snapshots[0]
-	snap1 := netBuffer.snapshots[1]
-	netBuffer.mu.RUnlock()
+func (s *netSampler) snapshots() ([]netSnapshot, []netSnapshot, time.Time, time.Time) {
+	s.buffer.mu.RLock()
+	snap0 := append([]netSnapshot(nil), s.buffer.snapshots[0]...)
+	snap1 := append([]netSnapshot(nil), s.buffer.snapshots[1]...)
+	s.buffer.mu.RUnlock()
 
 	var t0, t1 time.Time
 	if len(snap0) > 0 {
@@ -155,6 +144,10 @@ func GetNetSnapshots() ([]netSnapshot, []netSnapshot, time.Time, time.Time) {
 	}
 	if len(snap1) > 0 {
 		t1 = snap1[0].timestamp
+	}
+	if !t0.IsZero() && !t1.IsZero() && t1.Before(t0) {
+		snap0, snap1 = snap1, snap0
+		t0, t1 = t1, t0
 	}
 
 	return snap0, snap1, t0, t1

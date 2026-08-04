@@ -6,14 +6,10 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
-	"tisminSRETool/internal/alert"
 	"tisminSRETool/internal/collector"
 	"tisminSRETool/internal/engine"
-	"tisminSRETool/internal/model"
 )
 
 func main() {
@@ -23,20 +19,6 @@ func main() {
 	c := &collector.LinuxCollector{}
 	logger := log.New(os.Stdout, "[debug] ", log.LstdFlags|log.Lshortfile)
 	r := engine.NewRunner(c, 5*time.Second, logger)
-	alertCfg := model.AlertConfig{
-		Enabled:                    true,
-		CPUThreshold:               80,
-		MemoryThreshold:            80,
-		DiskThreshold:              85,
-		DiskAwaitThreshold:         50,
-		DiskUtilThreshold:          80,
-		InodesThreshold:            80,
-		NetworkPacketLossThreshold: 0.01,
-	}
-	checker := alert.NewRuleChecker(alertCfg)
-	sender := alert.NewEmailSender(2)
-	emailCfg := buildEmailConfigFromEnv()
-	r.SetAlerting(checker, sender, emailCfg)
 
 	// 2) 根上下文，接收退出信号
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,35 +57,4 @@ func main() {
 			)
 		}
 	}
-}
-
-func buildEmailConfigFromEnv() model.EmailConfig {
-	to := []string{}
-	for _, addr := range strings.Split(strings.TrimSpace(os.Getenv("TISMIN_ALERT_EMAIL_TO")), ",") {
-		addr = strings.TrimSpace(addr)
-		if addr != "" {
-			to = append(to, addr)
-		}
-	}
-
-	return model.EmailConfig{
-		Host:     strings.TrimSpace(os.Getenv("TISMIN_ALERT_SMTP_HOST")),
-		Port:     getenvInt("TISMIN_ALERT_SMTP_PORT", 0),
-		Username: strings.TrimSpace(os.Getenv("TISMIN_ALERT_SMTP_USERNAME")),
-		Password: strings.TrimSpace(os.Getenv("TISMIN_ALERT_SMTP_PASSWORD")),
-		From:     strings.TrimSpace(os.Getenv("TISMIN_ALERT_EMAIL_FROM")),
-		To:       to,
-	}
-}
-
-func getenvInt(key string, def int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return def
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		return def
-	}
-	return v
 }

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"tisminSRETool/internal/alert"
 	"tisminSRETool/internal/collector"
 	"tisminSRETool/internal/model"
 )
@@ -15,16 +14,14 @@ type Runner struct {
 	collector collector.Collector
 	interval  time.Duration
 	logger    *log.Logger
-	checker   alert.AlertChecker
-	sender    alert.AlertSender
-	emailCfg  model.EmailConfig
 
 	mu       sync.RWMutex
 	last     *model.Metrics
 	lastErrs *model.CollectErrors
 	lastAt   time.Time
-	running  int32       // 0 = not running, 1 = running
-	doneCh   chan struct{} // 用于通知调用者 runner 已停止
+	started  int32
+	running  int32
+	doneCh   chan struct{}
 }
 
 func NewRunner(c collector.Collector, interval time.Duration, logger *log.Logger) *Runner {
@@ -35,21 +32,14 @@ func NewRunner(c collector.Collector, interval time.Duration, logger *log.Logger
 		collector: c,
 		interval:  interval,
 		logger:    logger,
+		doneCh:    make(chan struct{}),
 	}
 }
 
 func (r *Runner) Snapshot() (metrics *model.Metrics, errs *model.CollectErrors, at time.Time) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.last, r.lastErrs, r.lastAt
-}
-
-func (r *Runner) SetAlerting(checker alert.AlertChecker, sender alert.AlertSender, emailCfg model.EmailConfig) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.checker = checker
-	r.sender = sender
-	r.emailCfg = emailCfg
+	return cloneMetrics(r.last), cloneCollectErrors(r.lastErrs), r.lastAt
 }
 
 func (r *Runner) Run(ctx context.Context) {
@@ -57,21 +47,27 @@ func (r *Runner) Run(ctx context.Context) {
 		ctx = context.Background()
 	}
 
-	// 防止重复启动
-	if !atomic.CompareAndSwapInt32(&r.running, 0, 1) {
+	// Runner is intentionally one-shot. A second Run call would otherwise
+	// create duplicate background samplers and make Done semantics ambiguous.
+	if !atomic.CompareAndSwapInt32(&r.started, 0, 1) {
 		if r.logger != nil {
-			r.logger.Printf("runner already running, skip")
+			r.logger.Printf("runner already started, skip")
 		}
 		return
 	}
+	atomic.StoreInt32(&r.running, 1)
 	defer atomic.StoreInt32(&r.running, 0)
+	defer close(r.doneCh)
 
-	// 创建内部通道
-	r.doneCh = make(chan struct{})
-
-	// 启动后台采集器（100ms 采样间隔）
-	go collector.StartCPUCollector(ctx, 100*time.Millisecond)
-	go collector.StartNetCollector(ctx, 100*time.Millisecond)
+	backgroundDone := make(chan struct{})
+	if background, ok := r.collector.(collector.BackgroundCollector); ok {
+		go func() {
+			defer close(backgroundDone)
+			background.RunBackground(ctx)
+		}()
+	} else {
+		close(backgroundDone)
+	}
 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -84,7 +80,7 @@ func (r *Runner) Run(ctx context.Context) {
 			if r.logger != nil {
 				r.logger.Printf("runner stopped: %v", ctx.Err())
 			}
-			close(r.doneCh)
+			<-backgroundDone
 			return
 		case <-ticker.C:
 			r.collectOnce(ctx)
@@ -94,10 +90,17 @@ func (r *Runner) Run(ctx context.Context) {
 
 // WaitDone 等待 runner 完全停止（用于优雅退出）
 func (r *Runner) WaitDone() {
-	if r.doneCh == nil {
-		return
-	}
 	<-r.doneCh
+}
+
+// Done is closed after both the collection loop and collector-owned background
+// samplers have stopped.
+func (r *Runner) Done() <-chan struct{} {
+	return r.doneCh
+}
+
+func (r *Runner) IsRunning() bool {
+	return atomic.LoadInt32(&r.running) == 1
 }
 
 func (r *Runner) collectOnce(parent context.Context) {
@@ -114,86 +117,50 @@ func (r *Runner) collectOnce(parent context.Context) {
 	metrics, errs := r.collector.Collect(collectCtx)
 
 	r.mu.Lock()
-	r.last = metrics
-	r.lastErrs = errs
+	r.last = cloneMetrics(metrics)
+	r.lastErrs = cloneCollectErrors(errs)
 	r.lastAt = time.Now()
 	r.mu.Unlock()
 
-	if r.logger == nil {
-		return
-	}
-
 	if errs != nil && errs.HasError() {
-		r.logger.Printf("collect finished with errors: %+v", errs)
+		if r.logger != nil {
+			r.logger.Printf("collect finished with errors: %+v", errs)
+		}
 		return
 	}
 
 	if metrics == nil {
-		r.logger.Printf("collect finished with empty metrics")
-		return
-	}
-
-	r.logger.Printf("collect finished: host=%s ts=%s", metrics.Host, metrics.UpdateTimestamp)
-	r.processAlerts(parent, metrics)
-}
-
-func (r *Runner) processAlerts(ctx context.Context, metrics *model.Metrics) {
-	r.mu.RLock()
-	checker := r.checker
-	sender := r.sender
-	emailCfg := r.emailCfg
-	r.mu.RUnlock()
-
-	if checker == nil || metrics == nil {
-		return
-	}
-
-	alerts, err := checker.Check(ctx, metrics)
-	if err != nil {
 		if r.logger != nil {
-			r.logger.Printf("alert check failed: %v", err)
+			r.logger.Printf("collect finished with empty metrics")
 		}
 		return
-	}
-	if len(alerts) == 0 {
-		return
-	}
-
-	now := time.Now()
-	for i := range alerts {
-		if alerts[i].Host == "" {
-			alerts[i].Host = metrics.Host
-		}
-		if alerts[i].Timestamp.IsZero() {
-			alerts[i].Timestamp = now
-		}
 	}
 
 	if r.logger != nil {
-		r.logger.Printf("alerts triggered: count=%d", len(alerts))
-	}
-
-	if sender == nil {
-		if r.logger != nil {
-			r.logger.Printf("alert sender not configured, skip sending")
-		}
-		return
-	}
-
-	if !isEmailConfigUsable(emailCfg) {
-		if r.logger != nil {
-			r.logger.Printf("email config incomplete, skip sending")
-		}
-		return
-	}
-
-	sendCtx, cancel := context.WithTimeout(ctx, r.interval)
-	defer cancel()
-	if err := sender.Send(sendCtx, alerts, emailCfg); err != nil && r.logger != nil {
-		r.logger.Printf("alert send failed: %v", err)
+		r.logger.Printf("collect finished: host=%s ts=%s", metrics.Host, metrics.UpdateTimestamp)
 	}
 }
 
-func isEmailConfigUsable(cfg model.EmailConfig) bool {
-	return cfg.Host != "" && cfg.Port > 0 && cfg.From != "" && len(cfg.To) > 0
+func cloneMetrics(src *model.Metrics) *model.Metrics {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.CPU.PerCPUUsage = append([]float64(nil), src.CPU.PerCPUUsage...)
+	dst.Disk = append([]model.DiskStat(nil), src.Disk...)
+	dst.Net = append([]model.NetStat(nil), src.Net...)
+	dst.Procs = append([]model.ProcStat(nil), src.Procs...)
+	return &dst
+}
+
+func cloneCollectErrors(src *model.CollectErrors) *model.CollectErrors {
+	if src == nil {
+		return nil
+	}
+	return &model.CollectErrors{
+		CPU:  append([]error(nil), src.CPU...),
+		Mem:  append([]error(nil), src.Mem...),
+		Disk: append([]error(nil), src.Disk...),
+		Net:  append([]error(nil), src.Net...),
+	}
 }

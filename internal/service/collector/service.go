@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+	"sync"
 	"time"
 
 	"tisminSRETool/internal/collector"
@@ -16,21 +16,49 @@ import (
 )
 
 type Service struct {
-	config *model.Config
-	logger *log.Logger
+	config          *model.Config
+	logger          *log.Logger
+	collector       collector.Collector
+	shutdownTimeout time.Duration
 }
 
-func New(config *model.Config, logger *log.Logger) (*Service, error) {
+type Option func(*Service)
+
+func WithCollector(c collector.Collector) Option {
+	return func(service *Service) {
+		if c != nil {
+			service.collector = c
+		}
+	}
+}
+
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(service *Service) {
+		if timeout > 0 {
+			service.shutdownTimeout = timeout
+		}
+	}
+}
+
+func New(config *model.Config, logger *log.Logger, options ...Option) (*Service, error) {
 	if config == nil {
 		return nil, fmt.Errorf("collector service config is nil")
 	}
 	if logger == nil {
 		logger = log.New(os.Stdout, "", log.LstdFlags)
 	}
-	return &Service{
-		config: config,
-		logger: logger,
-	}, nil
+	service := &Service{
+		config:          config,
+		logger:          logger,
+		collector:       &collector.LinuxCollector{},
+		shutdownTimeout: 10 * time.Second,
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -41,58 +69,72 @@ func (s *Service) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	linuxCollector := &collector.LinuxCollector{}
-	runner := engine.NewRunner(linuxCollector, s.config.App.RefreshInterval, s.logger)
+	runner := engine.NewRunner(s.collector, s.config.App.RefreshInterval, s.logger)
 
-	go runner.Run(runCtx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runner.Run(runCtx)
+	}()
 
+	var metricsHandler http.Handler
 	if s.config.Prometheus.Enabled {
 		promExporter := exporter.NewPrometheusExporter(runner)
-		go promExporter.StartMetricsCollector(runCtx, s.config.App.RefreshInterval)
+		metricsHandler = promExporter.Handler()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			promExporter.StartMetricsCollector(runCtx, s.config.App.RefreshInterval)
+		}()
 	}
 
+	serviceErrCh := make(chan error, 1)
 	if s.config.HTTP.Listen != "" {
-		httpServer := exporter.NewHTTPServer(s.config.HTTP, s.config.Prometheus.Path, runner)
+		httpServer := exporter.NewHTTPServer(s.config.HTTP, s.config.Prometheus.Path, runner, metricsHandler)
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			s.logger.Printf("collector HTTP server listening on %s", s.config.HTTP.Listen)
 			if err := httpServer.Start(runCtx); err != nil {
-				s.logger.Printf("collector HTTP server stopped with error: %v", err)
-				cancel()
+				select {
+				case serviceErrCh <- fmt.Errorf("HTTP server: %w", err):
+				default:
+				}
 			}
 		}()
 	}
 
-	sigsCh := make(chan os.Signal, 1)
-	signal.Notify(sigsCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigsCh)
-
+	var runErr error
 	select {
-	case sig := <-sigsCh:
-		s.logger.Printf("received signal: %v", sig)
 	case <-ctx.Done():
 		s.logger.Printf("context canceled: %v", ctx.Err())
-	case <-runCtx.Done():
+	case runErr = <-serviceErrCh:
+		s.logger.Printf("collector service component failed: %v", runErr)
 	}
 
 	s.logger.Println("collector service shutting down...")
 	cancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer shutdownCancel()
 
-	runnerDone := make(chan struct{})
+	componentsDone := make(chan struct{})
 	go func() {
-		runner.WaitDone()
-		close(runnerDone)
+		wg.Wait()
+		close(componentsDone)
 	}()
 
 	select {
-	case <-runnerDone:
-		s.logger.Println("collector runner stopped")
+	case <-componentsDone:
+		s.logger.Println("collector service components stopped")
 	case <-shutdownCtx.Done():
+		if runErr != nil {
+			return fmt.Errorf("%v; collector shutdown timeout", runErr)
+		}
 		return fmt.Errorf("collector shutdown timeout")
 	}
 
 	s.logger.Println("collector service stopped")
-	return nil
+	return runErr
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	collectorservice "tisminSRETool/internal/service/collector"
 )
@@ -34,7 +36,9 @@ func main() {
 		logger.Fatalf("failed to create collector service: %v", err)
 	}
 
-	if err := service.Run(context.Background()); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := service.Run(ctx); err != nil {
 		logger.Printf("collector service failed: %v", err)
 		os.Exit(1)
 	}
