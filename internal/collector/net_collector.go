@@ -2,13 +2,9 @@ package collector
 
 import (
 	"context"
-	"log"
-	"strconv"
-	"strings"
 	"time"
 
 	"tisminSRETool/internal/model"
-	"tisminSRETool/pkg/utils"
 )
 
 // CollectNetinfo 采集网络信息
@@ -32,97 +28,23 @@ func collectNetinfo(ctx context.Context, sampler *netSampler) ([]model.NetStat, 
 		}
 	}
 
-	// 缓存无效，回退到直接读取
-	m := make([]model.NetStat, 0)
-	lines, err := utils.ReadLinesOffsetNWithContext(ctx, "/proc/net/dev", 2, -1)
-	if err != nil {
-		log.Printf("error collecting net io: %s", err)
-		return nil, err
+	// 缓存无效，回退到直接读取。保留合法网卡数据和聚合解析错误。
+	snapshots, err := readNetSnapshotWithContext(ctx)
+	m := make([]model.NetStat, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		m = append(m, model.NetStat{
+			Name:      snapshot.iface,
+			RxBytes:   snapshot.rxBytes,
+			RxPackets: snapshot.rxPackets,
+			RxErrors:  snapshot.rxErrors,
+			RxDropped: snapshot.rxDrops,
+			TxBytes:   snapshot.txBytes,
+			TxPackets: snapshot.txPackets,
+			TxErrors:  snapshot.txErrors,
+			TxDropped: snapshot.txDrops,
+		})
 	}
-
-	for _, line := range lines {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		separation := strings.LastIndex(line, ":")
-		if separation == -1 {
-			continue
-		}
-		parts := make([]string, 2)
-		parts[0] = line[:separation]
-		parts[1] = line[separation+1:]
-
-		interfaceName := strings.TrimSpace(parts[0])
-		if interfaceName == "" {
-			continue
-		}
-
-		fields := strings.Fields(parts[1])
-		if len(fields) < 12 {
-			log.Printf("invalid format of /proc/net/dev: %s", line)
-			continue
-		}
-		recvBytes, err := strconv.ParseUint(fields[0], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		recvPackets, err := strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		recvErrors, err := strconv.ParseUint(fields[2], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		recvDrops, err := strconv.ParseUint(fields[3], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		sendBytes, err := strconv.ParseUint(fields[8], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		sendPackets, err := strconv.ParseUint(fields[9], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		sendErrors, err := strconv.ParseUint(fields[10], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-
-		sendDrops, err := strconv.ParseUint(fields[11], 10, 64)
-		if err != nil {
-			log.Printf("error collecting %s net io: %s", interfaceName, err)
-			return nil, err
-		}
-		netStat := model.NetStat{
-			Name:      interfaceName,
-			RxBytes:   recvBytes,
-			RxPackets: recvPackets,
-			RxErrors:  recvErrors,
-			RxDropped: recvDrops,
-			TxBytes:   sendBytes,
-			TxPackets: sendPackets,
-			TxErrors:  sendErrors,
-			TxDropped: sendDrops,
-		}
-		m = append(m, netStat)
-	}
-	return m, nil
+	return m, err
 }
 
 // calcNetStatsFromSnapshots 从缓存快照计算网络速率

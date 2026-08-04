@@ -2,6 +2,8 @@ package collector
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -60,12 +62,16 @@ func (s *netSampler) run(ctx context.Context, sampleInterval time.Duration) {
 
 // 采集网络快照并存入环形缓冲区
 func (s *netSampler) collect(ctx context.Context) {
-	snapshot, err := readNetSnapshotWithContext(ctx)
+	s.collectWithReader(ctx, readNetSnapshotWithContext)
+}
+
+func (s *netSampler) collectWithReader(ctx context.Context, read func(context.Context) ([]netSnapshot, error)) {
+	snapshot, err := read(ctx)
 	if err != nil {
-		if err != context.Canceled && err != context.DeadlineExceeded {
-			log.Printf("[WARN] Net background collect failed: %v", err)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("[WARN] network background sample skipped: %v", err)
 		}
-		return // 静默失败
+		return
 	}
 
 	s.buffer.mu.Lock()
@@ -80,54 +86,90 @@ func readNetSnapshotWithContext(ctx context.Context) ([]netSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseNetSnapshotLines(ctx, lines, time.Now())
+}
 
-	var snapshots []netSnapshot
-	now := time.Now()
+func parseNetSnapshotLines(ctx context.Context, lines []string, timestamp time.Time) ([]netSnapshot, error) {
+	snapshots := make([]netSnapshot, 0, len(lines))
+	var parseErrors []error
 
 	for _, line := range lines {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		separation := strings.LastIndex(line, ":")
-		if separation == -1 {
+		snapshot, err := parseNetSnapshotLine(line, timestamp)
+		if err != nil {
+			parseErrors = append(parseErrors, err)
 			continue
 		}
-
-		iface := strings.TrimSpace(line[:separation])
-		if iface == "" {
-			continue
-		}
-
-		fields := strings.Fields(line[separation+1:])
-		if len(fields) < 12 {
-			continue
-		}
-
-		rxBytes, _ := strconv.ParseUint(fields[0], 10, 64)
-		rxPackets, _ := strconv.ParseUint(fields[1], 10, 64)
-		rxErrors, _ := strconv.ParseUint(fields[2], 10, 64)
-		rxDrops, _ := strconv.ParseUint(fields[3], 10, 64)
-		txBytes, _ := strconv.ParseUint(fields[8], 10, 64)
-		txPackets, _ := strconv.ParseUint(fields[9], 10, 64)
-		txErrors, _ := strconv.ParseUint(fields[10], 10, 64)
-		txDrops, _ := strconv.ParseUint(fields[11], 10, 64)
-
-		snapshots = append(snapshots, netSnapshot{
-			timestamp: now,
-			iface:     iface,
-			rxBytes:   rxBytes,
-			txBytes:   txBytes,
-			rxPackets: rxPackets,
-			txPackets: txPackets,
-			rxErrors:  rxErrors,
-			txErrors:  txErrors,
-			rxDrops:   rxDrops,
-			txDrops:   txDrops,
-		})
+		snapshots = append(snapshots, snapshot)
 	}
 
-	return snapshots, nil
+	if len(snapshots) == 0 {
+		parseErrors = append(parseErrors, fmt.Errorf("parse /proc/net/dev: no valid interface rows"))
+	}
+	return snapshots, errors.Join(parseErrors...)
+}
+
+func parseNetSnapshotLine(line string, timestamp time.Time) (netSnapshot, error) {
+	separation := strings.LastIndex(line, ":")
+	if separation == -1 {
+		return netSnapshot{}, fmt.Errorf("parse /proc/net/dev line %q: missing interface separator", line)
+	}
+
+	iface := strings.TrimSpace(line[:separation])
+	if iface == "" {
+		return netSnapshot{}, fmt.Errorf("parse /proc/net/dev line %q: empty interface name", line)
+	}
+
+	fields := strings.Fields(line[separation+1:])
+	if len(fields) < 12 {
+		return netSnapshot{}, fmt.Errorf("parse /proc/net/dev interface %q: expected at least 12 fields, got %d", iface, len(fields))
+	}
+
+	fieldIndexes := []struct {
+		name  string
+		index int
+	}{
+		{name: "rx_bytes", index: 0},
+		{name: "rx_packets", index: 1},
+		{name: "rx_errors", index: 2},
+		{name: "rx_drops", index: 3},
+		{name: "tx_bytes", index: 8},
+		{name: "tx_packets", index: 9},
+		{name: "tx_errors", index: 10},
+		{name: "tx_drops", index: 11},
+	}
+	values := make([]uint64, len(fieldIndexes))
+	for i, field := range fieldIndexes {
+		value, err := parseNetUint(iface, field.name, fields[field.index])
+		if err != nil {
+			return netSnapshot{}, err
+		}
+		values[i] = value
+	}
+
+	return netSnapshot{
+		timestamp: timestamp,
+		iface:     iface,
+		rxBytes:   values[0],
+		rxPackets: values[1],
+		rxErrors:  values[2],
+		rxDrops:   values[3],
+		txBytes:   values[4],
+		txPackets: values[5],
+		txErrors:  values[6],
+		txDrops:   values[7],
+	}, nil
+}
+
+func parseNetUint(iface, field, raw string) (uint64, error) {
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse /proc/net/dev interface %q field %s value %q: %w", iface, field, raw, err)
+	}
+	return value, nil
 }
 
 // 从网络环形缓冲区读取原始快照（主流程调用）

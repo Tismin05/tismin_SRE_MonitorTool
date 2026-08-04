@@ -2,7 +2,6 @@ package collector
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -15,10 +14,11 @@ type LinuxCollector struct {
 	samplersOnce sync.Once
 	cpuSampler   *cpuSampler
 	netSampler   *netSampler
+	diskSampler  *diskSampler
 
 	collectCPU  func(context.Context, *cpuSampler) (model.CPUStat, error)
 	collectMem  func(context.Context) (*model.MemoryStat, error)
-	collectDisk func(context.Context) ([]model.DiskStat, error)
+	collectDisk func(context.Context, *diskSampler) ([]model.DiskStat, error)
 	collectNet  func(context.Context, *netSampler) ([]model.NetStat, error)
 }
 
@@ -54,6 +54,9 @@ func (c *LinuxCollector) initSamplers() {
 		if c.netSampler == nil {
 			c.netSampler = &netSampler{}
 		}
+		if c.diskSampler == nil {
+			c.diskSampler = &diskSampler{}
+		}
 		if c.collectCPU == nil {
 			c.collectCPU = collectCPUStat
 		}
@@ -61,7 +64,7 @@ func (c *LinuxCollector) initSamplers() {
 			c.collectMem = CollectMeminfo
 		}
 		if c.collectDisk == nil {
-			c.collectDisk = CollectDisk
+			c.collectDisk = collectDisk
 		}
 		if c.collectNet == nil {
 			c.collectNet = collectNetinfo
@@ -113,7 +116,7 @@ func (c *LinuxCollector) Collect(ctx context.Context) (*model.Metrics, *model.Co
 	}()
 	go func() {
 		defer wg.Done()
-		value, err := c.collectDisk(ctx)
+		value, err := c.collectDisk(ctx, c.diskSampler)
 		results <- collectionResult{subsystem: "disk", disk: value, err: err}
 	}()
 	go func() {
@@ -127,56 +130,30 @@ func (c *LinuxCollector) Collect(ctx context.Context) (*model.Metrics, *model.Co
 	}()
 
 	for result := range results {
-		if result.err != nil {
-			appendCollectError(errs, result.subsystem, result.err)
-			continue
-		}
 		switch result.subsystem {
 		case "cpu":
 			metrics.CPU = result.cpu
 		case "memory":
-			metrics.Mem = *result.mem
+			if result.mem != nil {
+				metrics.Mem = *result.mem
+			}
 		case "disk":
 			metrics.Disk = result.disk
 		case "network":
 			metrics.Net = result.net
 		}
+		if result.err != nil {
+			appendCollectError(errs, result.subsystem, result.err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
-		appendContextError(errs, err)
+		errs.Context = append(errs.Context, err)
 	}
-
 	metrics.UpdateTimestamp = time.Now().Format(time.RFC3339)
 	if !errs.HasError() {
 		return metrics, nil
 	}
 	return metrics, errs
-}
-
-// appendContextError makes collection cancellation observable even when a
-// worker manages to return partial data without propagating ctx.Err itself.
-func appendContextError(errs *model.CollectErrors, err error) {
-	if !containsError(errs.CPU, err) {
-		errs.CPU = append(errs.CPU, err)
-	}
-	if !containsError(errs.Mem, err) {
-		errs.Mem = append(errs.Mem, err)
-	}
-	if !containsError(errs.Disk, err) {
-		errs.Disk = append(errs.Disk, err)
-	}
-	if !containsError(errs.Net, err) {
-		errs.Net = append(errs.Net, err)
-	}
-}
-
-func containsError(errs []error, target error) bool {
-	for _, err := range errs {
-		if errors.Is(err, target) {
-			return true
-		}
-	}
-	return false
 }
 
 func appendCollectError(errs *model.CollectErrors, subsystem string, err error) {

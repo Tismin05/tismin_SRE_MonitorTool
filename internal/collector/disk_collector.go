@@ -2,6 +2,8 @@ package collector
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,11 +25,11 @@ type DiskIOStat struct {
 	IOQueuesTime uint64 // I/O等待时间 ms
 }
 
-var (
-	diskStateMu    sync.Mutex
-	prevDiskStats  map[string]DiskIOStat
-	prevDiskStatAt time.Time
-)
+type diskSampler struct {
+	mu        sync.Mutex
+	stats     map[string]DiskIOStat
+	sampledAt time.Time
+}
 
 const sectorSizeBytes uint64 = 512
 
@@ -60,6 +62,9 @@ func readMounts(ctx context.Context) (map[string]string, error) {
 		deviceName := strings.TrimPrefix(device, "/dev/")
 		mounts[deviceName] = mountPoint
 	}
+	if len(mounts) == 0 {
+		return nil, fmt.Errorf("parse /proc/mounts: no valid physical mounts")
+	}
 	return mounts, nil
 }
 
@@ -90,8 +95,6 @@ func isVirtualFS(fsType string) bool {
 	return virtualFSTypes[fsType]
 }
 
-
-
 // statFS statfs 取容量
 func statFS(path string) (total, free, avail, inodes, inodesFree uint64, err error) {
 	var st unix.Statfs_t
@@ -112,16 +115,22 @@ func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDiskStatsLines(ctx, lines)
+}
+
+func parseDiskStatsLines(ctx context.Context, lines []string) (map[string]DiskIOStat, error) {
 	stats := make(map[string]DiskIOStat)
+	var parseErrors []error
 	for _, line := range lines {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 14 {
+		stat, err := parseDiskStatsLine(line)
+		if err != nil {
+			parseErrors = append(parseErrors, err)
 			continue
 		}
-		name := strings.TrimSpace(fields[2])
+		name := stat.Name
 
 		// 过滤虚拟设备和分区
 		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") {
@@ -132,22 +141,60 @@ func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 		//	continue
 		//}
 
-		readIO, _ := strconv.ParseUint(fields[3], 10, 64)
-		readSectors, _ := strconv.ParseUint(fields[5], 10, 64)
-		writeIO, _ := strconv.ParseUint(fields[7], 10, 64)
-		writeSectors, _ := strconv.ParseUint(fields[9], 10, 64)
-		ioQueuesTime, _ := strconv.ParseUint(fields[12], 10, 64)
-
-		stats[name] = DiskIOStat{
-			Name:         name,
-			ReadIOs:      readIO,
-			ReadSectors:  readSectors,
-			WriteIOs:     writeIO,
-			WriteSectors: writeSectors,
-			IOQueuesTime: ioQueuesTime,
-		}
+		stats[name] = stat
 	}
-	return stats, nil
+	if len(stats) == 0 {
+		parseErrors = append(parseErrors, fmt.Errorf("parse /proc/diskstats: no valid physical device rows"))
+	}
+	return stats, errors.Join(parseErrors...)
+}
+
+func parseDiskStatsLine(line string) (DiskIOStat, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 14 {
+		return DiskIOStat{}, fmt.Errorf("parse /proc/diskstats line %q: expected at least 14 fields, got %d", line, len(fields))
+	}
+
+	device := strings.TrimSpace(fields[2])
+	if device == "" {
+		return DiskIOStat{}, fmt.Errorf("parse /proc/diskstats line %q: empty device name", line)
+	}
+
+	fieldIndexes := []struct {
+		name  string
+		index int
+	}{
+		{name: "read_ios", index: 3},
+		{name: "read_sectors", index: 5},
+		{name: "write_ios", index: 7},
+		{name: "write_sectors", index: 9},
+		{name: "io_queue_time", index: 12},
+	}
+	values := make([]uint64, len(fieldIndexes))
+	for i, field := range fieldIndexes {
+		value, err := parseDiskUint(device, field.name, fields[field.index])
+		if err != nil {
+			return DiskIOStat{}, err
+		}
+		values[i] = value
+	}
+
+	return DiskIOStat{
+		Name:         device,
+		ReadIOs:      values[0],
+		ReadSectors:  values[1],
+		WriteIOs:     values[2],
+		WriteSectors: values[3],
+		IOQueuesTime: values[4],
+	}, nil
+}
+
+func parseDiskUint(device, field, raw string) (uint64, error) {
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse /proc/diskstats device %q field %s value %q: %w", device, field, raw, err)
+	}
+	return value, nil
 }
 
 // 判断是否为分区
@@ -166,24 +213,56 @@ func readDiskStats(ctx context.Context) (map[string]DiskIOStat, error) {
 	return false
 }*/
 
-// CollectDisk 组合 DiskStat 从物理磁盘出发，查找挂载点，正确匹配 IO 统计
+type diskStatFSFunc func(string) (total, free, avail, inodes, inodesFree uint64, err error)
+
+// CollectDisk 保留无状态兼容入口。LinuxCollector 使用自身的 diskSampler 维护速率基线。
 func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
+	return collectDisk(ctx, &diskSampler{})
+}
+
+func collectDisk(ctx context.Context, sampler *diskSampler) ([]model.DiskStat, error) {
+	return collectDiskWithDeps(ctx, sampler, readMounts, readDiskStats, statFS, time.Now)
+}
+
+func collectDiskWithDeps(
+	ctx context.Context,
+	sampler *diskSampler,
+	readMountsFn func(context.Context) (map[string]string, error),
+	readDiskStatsFn func(context.Context) (map[string]DiskIOStat, error),
+	statFSFn diskStatFSFunc,
+	nowFn func() time.Time,
+) ([]model.DiskStat, error) {
+	if sampler == nil {
+		sampler = &diskSampler{}
+	}
+
 	// 获取设备名 -> 挂载点 映射
-	mounts, err := readMounts(ctx)
+	mounts, err := readMountsFn(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// 获取物理磁盘 IO 统计
-	ioStats, err := readDiskStats(ctx)
-	if err != nil {
+	ioStats, parseErr := readDiskStatsFn(ctx)
+	if parseErr != nil && len(ioStats) == 0 {
+		return nil, parseErr
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	now := time.Now()
-	prevStats, elapsedSec := snapshotPrevDiskStats(ioStats, now)
+	now := nowFn()
+	prevStats, prevAt := sampler.previous()
+	elapsedSec := 0.0
+	if !prevAt.IsZero() {
+		elapsedSec = now.Sub(prevAt).Seconds()
+	}
 
 	var out []model.DiskStat
+	var collectErrors []error
+	if parseErr != nil {
+		collectErrors = append(collectErrors, parseErr)
+	}
 	// 遍历物理磁盘
 	for deviceName, ioStat := range ioStats {
 		if err := ctx.Err(); err != nil {
@@ -198,9 +277,9 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 		}
 
 		// 获取容量信息
-		total, free, _, inodes, inodesFree, err := statFS(mountPoint)
+		total, free, _, inodes, inodesFree, err := statFSFn(mountPoint)
 		if err != nil {
-			// Failed to statfs, usually due to hung mount point
+			collectErrors = append(collectErrors, fmt.Errorf("statfs device %q mount %q: %w", deviceName, mountPoint, err))
 			continue
 		}
 		used := total - free
@@ -251,22 +330,38 @@ func CollectDisk(ctx context.Context) ([]model.DiskStat, error) {
 			IOQueueTime:       ioStat.IOQueuesTime,
 		})
 	}
-	return out, nil
+	if len(out) == 0 {
+		collectErrors = append(collectErrors, fmt.Errorf("collect disk: no valid mounted device metrics"))
+	}
+	collectErr := errors.Join(collectErrors...)
+	if collectErr == nil {
+		sampler.commit(ioStats, now)
+	}
+	return out, collectErr
 }
 
-// snapshotPrevDiskStats 快照上一次磁盘统计
-func snapshotPrevDiskStats(current map[string]DiskIOStat, now time.Time) (map[string]DiskIOStat, float64) {
-	diskStateMu.Lock()
-	defer diskStateMu.Unlock()
+func (s *diskSampler) previous() (map[string]DiskIOStat, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneDiskIOStats(s.stats), s.sampledAt
+}
 
-	previous := prevDiskStats
-	elapsed := 0.0
-	if !prevDiskStatAt.IsZero() {
-		elapsed = now.Sub(prevDiskStatAt).Seconds()
+func (s *diskSampler) commit(current map[string]DiskIOStat, sampledAt time.Time) {
+	s.mu.Lock()
+	s.stats = cloneDiskIOStats(current)
+	s.sampledAt = sampledAt
+	s.mu.Unlock()
+}
+
+func cloneDiskIOStats(src map[string]DiskIOStat) map[string]DiskIOStat {
+	if src == nil {
+		return nil
 	}
-	prevDiskStats = current
-	prevDiskStatAt = now
-	return previous, elapsed
+	dst := make(map[string]DiskIOStat, len(src))
+	for name, stat := range src {
+		dst[name] = stat
+	}
+	return dst
 }
 
 // uint64Diff 计算uint64差值

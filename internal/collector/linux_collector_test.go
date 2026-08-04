@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func TestLinuxCollectorWaitsForWorkersAfterCancellation(t *testing.T) {
 		collectMem: func(ctx context.Context) (*model.MemoryStat, error) {
 			return nil, waitForRelease(ctx)
 		},
-		collectDisk: func(ctx context.Context) ([]model.DiskStat, error) {
+		collectDisk: func(ctx context.Context, _ *diskSampler) ([]model.DiskStat, error) {
 			return nil, waitForRelease(ctx)
 		},
 		collectNet: func(ctx context.Context, _ *netSampler) ([]model.NetStat, error) {
@@ -68,10 +69,11 @@ func TestLinuxCollectorWaitsForWorkersAfterCancellation(t *testing.T) {
 	close(release)
 	select {
 	case got := <-returned:
-		if got.errs == nil || !containsError(got.errs.CPU, context.Canceled) ||
-			!containsError(got.errs.Mem, context.Canceled) ||
-			!containsError(got.errs.Disk, context.Canceled) ||
-			!containsError(got.errs.Net, context.Canceled) {
+		if got.errs == nil || len(got.errs.Context) != 1 || !errors.Is(got.errs.Context[0], context.Canceled) ||
+			len(got.errs.CPU) != 1 || len(got.errs.Mem) != 1 || len(got.errs.Disk) != 1 ||
+			!errors.Is(got.errs.CPU[0], context.Canceled) ||
+			!errors.Is(got.errs.Mem[0], context.Canceled) ||
+			!errors.Is(got.errs.Disk[0], context.Canceled) || len(got.errs.Net) != 0 {
 			t.Fatalf("cancellation errors not preserved: %#v", got.errs)
 		}
 		if got.metrics == nil || len(got.metrics.Net) != 1 || got.metrics.Net[0].RxBytes != 42 {
@@ -91,7 +93,7 @@ func TestLinuxCollectorSamplersAreIsolated(t *testing.T) {
 	first.initSamplers()
 	second.initSamplers()
 
-	if first.cpuSampler == second.cpuSampler || first.netSampler == second.netSampler {
+	if first.cpuSampler == second.cpuSampler || first.netSampler == second.netSampler || first.diskSampler == second.diskSampler {
 		t.Fatal("collector instances share sampler pointers")
 	}
 
@@ -109,6 +111,37 @@ func TestLinuxCollectorSamplersAreIsolated(t *testing.T) {
 	net0, net1, _, _ := second.netSampler.snapshots()
 	if len(net0) != 0 || len(net1) != 0 {
 		t.Fatal("second collector observed first collector network samples")
+	}
+}
+
+func TestLinuxCollectorAttributesCancellationOnlyToFailingWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := &LinuxCollector{
+		collectCPU: func(context.Context, *cpuSampler) (model.CPUStat, error) {
+			return model.CPUStat{Cores: 2}, nil
+		},
+		collectMem: func(context.Context) (*model.MemoryStat, error) {
+			return &model.MemoryStat{Total: 10}, nil
+		},
+		collectDisk: func(ctx context.Context, _ *diskSampler) ([]model.DiskStat, error) {
+			return nil, ctx.Err()
+		},
+		collectNet: func(context.Context, *netSampler) ([]model.NetStat, error) {
+			return []model.NetStat{{Name: "eth0"}}, nil
+		},
+	}
+
+	metrics, collectErrs := c.Collect(ctx)
+	if collectErrs == nil || len(collectErrs.Context) != 1 || !errors.Is(collectErrs.Context[0], context.Canceled) ||
+		len(collectErrs.Disk) != 1 || !errors.Is(collectErrs.Disk[0], context.Canceled) {
+		t.Fatalf("disk cancellation was not preserved: %#v", collectErrs)
+	}
+	if len(collectErrs.CPU) != 0 || len(collectErrs.Mem) != 0 || len(collectErrs.Net) != 0 {
+		t.Fatalf("cancellation was attributed to successful workers: %#v", collectErrs)
+	}
+	if metrics.CPU.Cores != 2 || metrics.Mem.Total != 10 || len(metrics.Net) != 1 {
+		t.Fatalf("successful worker data was not preserved: %#v", metrics)
 	}
 }
 

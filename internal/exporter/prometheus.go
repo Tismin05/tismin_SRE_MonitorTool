@@ -284,8 +284,8 @@ func (e *PrometheusExporter) StartMetricsCollector(ctx context.Context, interval
 }
 
 func (e *PrometheusExporter) collectMetrics() {
-	metrics, _, _ := e.runner.Snapshot()
-	if metrics == nil {
+	metrics, errs, _ := e.runner.Snapshot()
+	if metrics == nil || (errs != nil && errs.HasError()) {
 		return
 	}
 

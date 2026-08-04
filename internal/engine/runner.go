@@ -158,9 +158,10 @@ func cloneCollectErrors(src *model.CollectErrors) *model.CollectErrors {
 		return nil
 	}
 	return &model.CollectErrors{
-		CPU:  append([]error(nil), src.CPU...),
-		Mem:  append([]error(nil), src.Mem...),
-		Disk: append([]error(nil), src.Disk...),
-		Net:  append([]error(nil), src.Net...),
+		Context: append([]error(nil), src.Context...),
+		CPU:     append([]error(nil), src.CPU...),
+		Mem:     append([]error(nil), src.Mem...),
+		Disk:    append([]error(nil), src.Disk...),
+		Net:     append([]error(nil), src.Net...),
 	}
 }

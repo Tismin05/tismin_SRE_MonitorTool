@@ -125,6 +125,7 @@ func formatTimestamp(at time.Time) string {
 
 func collectErrorCounts(errs *model.CollectErrors) map[string]int {
 	return map[string]int{
+		"context": len(errs.Context),
 		"cpu":     len(errs.CPU),
 		"memory":  len(errs.Mem),
 		"disk":    len(errs.Disk),
