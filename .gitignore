@@ -1,21 +1,39 @@
-# 排除文档目录 (你的核心需求)
-doc/
-docs/
+# Binary output
+/tisminSRETool
+/tisminSRETool.exe
+*.exe
+dist/
+run/
+logs/
+.gocache/
 
-# 排除编译后的二进制文件
-tisminSRETool
-bin/
-
-# 排除 IDE 配置文件
+# IDE
 .idea/
 .vscode/
+*.swp
+*.swo
 
-# 排除 Go 环境产生的缓存
+# Go
 vendor/
 coverage.txt
+coverage.out
+*.test
+*.pid
 
-# 排除系统冗余
+# macOS
 .DS_Store
-*.swp
-.idea/
+*.DS_Store
+
+# Documentation build output
+docs/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Chinese documentation files (generated locally)
 Claude.md
+二次开发*.md
+开发*.md
+*开发*.md

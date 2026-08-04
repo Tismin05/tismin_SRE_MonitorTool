@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 	"tisminSRETool/internal/alert"
 	"tisminSRETool/internal/collector"
@@ -22,6 +23,8 @@ type Runner struct {
 	last     *model.Metrics
 	lastErrs *model.CollectErrors
 	lastAt   time.Time
+	running  int32       // 0 = not running, 1 = running
+	doneCh   chan struct{} // 用于通知调用者 runner 已停止
 }
 
 func NewRunner(c collector.Collector, interval time.Duration, logger *log.Logger) *Runner {
@@ -54,6 +57,18 @@ func (r *Runner) Run(ctx context.Context) {
 		ctx = context.Background()
 	}
 
+	// 防止重复启动
+	if !atomic.CompareAndSwapInt32(&r.running, 0, 1) {
+		if r.logger != nil {
+			r.logger.Printf("runner already running, skip")
+		}
+		return
+	}
+	defer atomic.StoreInt32(&r.running, 0)
+
+	// 创建内部通道
+	r.doneCh = make(chan struct{})
+
 	// 启动后台采集器（100ms 采样间隔）
 	go collector.StartCPUCollector(ctx, 100*time.Millisecond)
 	go collector.StartNetCollector(ctx, 100*time.Millisecond)
@@ -69,11 +84,20 @@ func (r *Runner) Run(ctx context.Context) {
 			if r.logger != nil {
 				r.logger.Printf("runner stopped: %v", ctx.Err())
 			}
+			close(r.doneCh)
 			return
 		case <-ticker.C:
 			r.collectOnce(ctx)
 		}
 	}
+}
+
+// WaitDone 等待 runner 完全停止（用于优雅退出）
+func (r *Runner) WaitDone() {
+	if r.doneCh == nil {
+		return
+	}
+	<-r.doneCh
 }
 
 func (r *Runner) collectOnce(parent context.Context) {

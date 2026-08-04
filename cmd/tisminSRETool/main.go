@@ -31,6 +31,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	// V1 original flow
+	runV1()
+}
+
+func runV1() {
 	// config 和日志加载
 	cfg := loadConfig()
 	logger := setupLogger(cfg.App)
@@ -70,13 +75,40 @@ func main() {
 		}()
 	}
 
+	// 优雅退出
 	sigsCh := make(chan os.Signal, 1)
 	signal.Notify(sigsCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigsCh
+
+	// 等待信号或HTTP server错误
+	select {
+	case sig := <-sigsCh:
+		logger.Printf("received signal: %v", sig)
+	case <-ctx.Done():
+		// HTTP server 异常退出
+	}
 
 	logger.Println("shutting down...")
 	cancel()
-	time.Sleep(2 * time.Second)
+
+	// 等待所有后台任务完成（最多10秒）
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// 等待 runner 停止
+	runnerDone := make(chan struct{})
+	go func() {
+		// runner.Run 使用 ctx，cancel 后会自然停止
+		runner.WaitDone()
+		close(runnerDone)
+	}()
+
+	select {
+	case <-runnerDone:
+		logger.Println("runner stopped")
+	case <-shutdownCtx.Done():
+		logger.Println("shutdown timeout, force exit")
+	}
+
 	logger.Println("stopped")
 }
 

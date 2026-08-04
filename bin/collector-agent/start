@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+set -eu
+
+BASE_DIR=${BASE_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)}
+BIN=${BIN:-"$BASE_DIR/dist/collector-agent"}
+CONFIG=${CONFIG:-"$BASE_DIR/configs/collector.yaml"}
+PID_FILE=${PID_FILE:-"$BASE_DIR/run/collector-agent.pid"}
+LOG_FILE=${LOG_FILE:-"$BASE_DIR/logs/collector-agent.stdout.log"}
+
+mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_FILE")"
+
+if [ -f "$PID_FILE" ]; then
+  PID=$(cat "$PID_FILE")
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    echo "collector-agent is already running: pid=$PID"
+    exit 0
+  fi
+  rm -f "$PID_FILE"
+fi
+
+if [ ! -x "$BIN" ]; then
+  echo "collector-agent binary not found or not executable: $BIN"
+  echo "run: make build-collector"
+  exit 1
+fi
+
+nohup "$BIN" -config "$CONFIG" >>"$LOG_FILE" 2>&1 &
+PID=$!
+echo "$PID" > "$PID_FILE"
+echo "collector-agent started: pid=$PID"
+
