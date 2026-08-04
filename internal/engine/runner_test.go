@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"sync/atomic"
@@ -15,6 +16,15 @@ type runnerTestCollector struct {
 	calls   atomic.Int32
 	called  chan struct{}
 	metrics *model.Metrics
+}
+
+type runnerResultCollector struct {
+	metrics *model.Metrics
+	errs    *model.CollectErrors
+}
+
+func (c *runnerResultCollector) Collect(context.Context) (*model.Metrics, *model.CollectErrors) {
+	return c.metrics, c.errs
 }
 
 type lifecycleTestCollector struct {
@@ -131,5 +141,45 @@ func TestRunnerLifecycleAndSnapshotIsolation(t *testing.T) {
 	case <-returned:
 	case <-time.After(time.Second):
 		t.Fatal("a second Run call did not return")
+	}
+}
+
+func TestRunnerSavesPartialSnapshotWithCollectionErrors(t *testing.T) {
+	wantErr := errors.New("partial network failure")
+	runner := NewRunner(&runnerResultCollector{
+		metrics: &model.Metrics{
+			Host: "host-a",
+			CPU:  model.CPUStat{UsagePercent: 42},
+			Net:  []model.NetStat{{Name: "eth0", RxBytes: 1000}},
+		},
+		errs: &model.CollectErrors{Net: []error{wantErr}},
+	}, time.Second, nil)
+
+	runner.collectOnce(context.Background())
+	metrics, errs, at := runner.Snapshot()
+	if metrics == nil || metrics.CPU.UsagePercent != 42 || len(metrics.Net) != 1 {
+		t.Fatalf("Runner did not retain partial metrics: %#v", metrics)
+	}
+	if errs == nil || len(errs.Net) != 1 || !errors.Is(errs.Net[0], wantErr) {
+		t.Fatalf("Runner did not retain collection errors: %#v", errs)
+	}
+	if at.IsZero() {
+		t.Fatal("Runner did not timestamp the partial snapshot")
+	}
+}
+
+func TestRunnerKeepsContextErrorsSeparateFromSubsystems(t *testing.T) {
+	runner := NewRunner(&runnerResultCollector{
+		metrics: &model.Metrics{Host: "host-a"},
+		errs:    &model.CollectErrors{Context: []error{context.DeadlineExceeded}},
+	}, time.Second, nil)
+
+	runner.collectOnce(context.Background())
+	_, errs, _ := runner.Snapshot()
+	if errs == nil || len(errs.Context) != 1 || !errors.Is(errs.Context[0], context.DeadlineExceeded) {
+		t.Fatalf("Runner did not retain the context error: %#v", errs)
+	}
+	if len(errs.CPU) != 0 || len(errs.Mem) != 0 || len(errs.Disk) != 0 || len(errs.Net) != 0 {
+		t.Fatalf("context error leaked into subsystem errors: %#v", errs)
 	}
 }

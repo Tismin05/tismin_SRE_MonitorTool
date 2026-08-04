@@ -66,6 +66,17 @@ func waitForRunnerSnapshot(t *testing.T, runner *engine.Runner, match func(*mode
 	t.Fatalf("runner snapshot did not reach expected state: metrics=%#v errors=%#v", metrics, errs)
 }
 
+func findMetricLine(t *testing.T, body, prefix string) string {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	t.Fatalf("metrics output does not contain a line with prefix %q", prefix)
+	return ""
+}
+
 func startExporterTestRunner(t *testing.T) (*engine.Runner, context.CancelFunc) {
 	t.Helper()
 	collector := &exporterTestCollector{
@@ -142,6 +153,20 @@ func TestPrometheusExporterKeepsLastCompleteSeriesOnCollectionError(t *testing.T
 
 	exporter := NewPrometheusExporter(runner)
 	exporter.collectMetrics()
+	initial := httptest.NewRecorder()
+	exporter.Handler().ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	initialBody := initial.Body.String()
+	for _, want := range []string{
+		`system_collector_last_collection_error{host="host-a"} 0`,
+		`system_collector_last_success_timestamp_seconds{host="host-a"}`,
+	} {
+		if !strings.Contains(initialBody, want) {
+			t.Fatalf("initial collection state does not contain %q", want)
+		}
+	}
+	lastSuccessPrefix := `system_collector_last_success_timestamp_seconds{host="host-a"} `
+	initialLastSuccess := findMetricLine(t, initialBody, lastSuccessPrefix)
+
 	collector.set(
 		&model.Metrics{
 			Host: "host-a",
@@ -159,13 +184,20 @@ func TestPrometheusExporterKeepsLastCompleteSeriesOnCollectionError(t *testing.T
 		return errs != nil && errs.HasError()
 	})
 	exporter.collectMetrics()
+	// Polling the same Runner snapshot again must not increment counters twice.
+	exporter.collectMetrics()
 
 	recorder := httptest.NewRecorder()
 	exporter.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := recorder.Body.String()
+	if got := findMetricLine(t, body, lastSuccessPrefix); got != initialLastSuccess {
+		t.Fatalf("last success timestamp changed on partial collection: before=%q after=%q", initialLastSuccess, got)
+	}
 	for _, want := range []string{
 		`system_cpu_usage_percent{host="host-a"} 42`,
 		`system_network_receive_bytes_total{host="host-a",interface="eth0"} 1000`,
+		`system_collector_last_collection_error{host="host-a"} 1`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="network"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("last complete metric disappeared after error snapshot: missing %q", want)
@@ -178,6 +210,82 @@ func TestPrometheusExporterKeepsLastCompleteSeriesOnCollectionError(t *testing.T
 		if strings.Contains(body, unwanted) {
 			t.Errorf("partial metric was published: %q", unwanted)
 		}
+	}
+	if strings.Contains(body, `system_collector_collection_errors_total{host="host-a",subsystem="network"} 2`) {
+		t.Fatal("the same error snapshot was counted more than once")
+	}
+
+	collector.set(
+		&model.Metrics{
+			Host: "host-a",
+			CPU:  model.CPUStat{UsagePercent: 55},
+			Net:  []model.NetStat{{Name: "eth1", RxBytes: 3000}},
+		},
+		nil,
+	)
+	waitForRunnerSnapshot(t, runner, func(metrics *model.Metrics, errs *model.CollectErrors) bool {
+		return metrics != nil && metrics.CPU.UsagePercent == 55 && (errs == nil || !errs.HasError())
+	})
+	exporter.collectMetrics()
+
+	recovered := httptest.NewRecorder()
+	exporter.Handler().ServeHTTP(recovered, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	recoveredBody := recovered.Body.String()
+	if got := findMetricLine(t, recoveredBody, lastSuccessPrefix); got == initialLastSuccess {
+		t.Fatalf("last success timestamp did not advance after recovery: %q", got)
+	}
+	for _, want := range []string{
+		`system_collector_last_collection_error{host="host-a"} 0`,
+		`system_cpu_usage_percent{host="host-a"} 55`,
+		`system_network_receive_bytes_total{host="host-a",interface="eth1"} 3000`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="network"} 1`,
+	} {
+		if !strings.Contains(recoveredBody, want) {
+			t.Errorf("recovered metrics output does not contain %q", want)
+		}
+	}
+}
+
+func TestPrometheusExporterRecordsSubsystemErrorsOncePerSnapshot(t *testing.T) {
+	runner := engine.NewRunner(nil, time.Second, nil)
+	exporter := NewPrometheusExporter(runner)
+	at := time.Unix(123, 0)
+	errs := &model.CollectErrors{
+		Context: []error{context.Canceled},
+		CPU:     []error{errors.New("cpu 1"), errors.New("cpu 2")},
+		Mem:     []error{errors.New("memory")},
+		Disk:    []error{errors.New("disk")},
+		Net:     []error{errors.New("network")},
+	}
+
+	exporter.recordCollectionState("host-a", false, errs, at)
+	exporter.recordCollectionState("host-a", false, errs, at)
+
+	recorder := httptest.NewRecorder()
+	exporter.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`system_collector_last_collection_error{host="host-a"} 1`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="context"} 1`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="cpu"} 2`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="memory"} 1`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="disk"} 1`,
+		`system_collector_collection_errors_total{host="host-a",subsystem="network"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("collection state does not contain %q", want)
+		}
+	}
+}
+
+func TestPrometheusExporterSkipsEmptyRunnerSnapshot(t *testing.T) {
+	exporter := NewPrometheusExporter(engine.NewRunner(nil, time.Second, nil))
+	exporter.collectMetrics()
+
+	recorder := httptest.NewRecorder()
+	exporter.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if strings.Contains(recorder.Body.String(), "system_collector_last_collection_error") {
+		t.Fatal("exporter published collection state before Runner produced a snapshot")
 	}
 }
 

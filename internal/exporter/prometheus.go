@@ -4,8 +4,11 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
+
 	"tisminSRETool/internal/engine"
+	"tisminSRETool/internal/model"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -15,6 +18,14 @@ import (
 type PrometheusExporter struct {
 	runner   *engine.Runner
 	registry *prometheus.Registry
+
+	collectMu      sync.Mutex
+	lastObservedAt time.Time
+
+	// Collection state
+	lastSuccessTimestamp *prometheus.GaugeVec
+	lastCollectionError  *prometheus.GaugeVec
+	collectionErrors     *prometheus.CounterVec
 
 	// CPU
 	cpuUsage      *prometheus.GaugeVec
@@ -72,6 +83,23 @@ func NewPrometheusExporter(runner *engine.Runner) *PrometheusExporter {
 		runner:   runner,
 		registry: registry,
 	}
+
+	// Collection state. These metrics are updated even when the data metrics
+	// remain fail-closed on a partial collection.
+	e.lastSuccessTimestamp = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "system_collector_last_success_timestamp_seconds",
+		Help: "最近一次完整成功采集的 Unix 时间戳（秒）",
+	}, []string{"host"})
+
+	e.lastCollectionError = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "system_collector_last_collection_error",
+		Help: "最近一次采集是否失败（1 表示失败，0 表示完整成功）",
+	}, []string{"host"})
+
+	e.collectionErrors = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "system_collector_collection_errors_total",
+		Help: "按子系统统计的采集错误总数",
+	}, []string{"host", "subsystem"})
 
 	// CPU
 	e.cpuUsage = factory.NewGaugeVec(prometheus.GaugeOpts{
@@ -284,14 +312,22 @@ func (e *PrometheusExporter) StartMetricsCollector(ctx context.Context, interval
 }
 
 func (e *PrometheusExporter) collectMetrics() {
-	metrics, errs, _ := e.runner.Snapshot()
-	if metrics == nil || (errs != nil && errs.HasError()) {
+	e.collectMu.Lock()
+	defer e.collectMu.Unlock()
+
+	metrics, errs, at := e.runner.Snapshot()
+	if at.IsZero() {
 		return
 	}
 
-	host := metrics.Host
-	if host == "" {
-		host = "unknown"
+	host := "unknown"
+	if metrics != nil && metrics.Host != "" {
+		host = metrics.Host
+	}
+	e.recordCollectionState(host, metrics != nil && (errs == nil || !errs.HasError()), errs, at)
+
+	if metrics == nil || (errs != nil && errs.HasError()) {
+		return
 	}
 
 	// CPU
@@ -376,5 +412,40 @@ func (e *PrometheusExporter) collectMetrics() {
 		e.netTxDropped.WithLabelValues(host, iface).Set(float64(net.TxDropped))
 		e.netRxSpeed.WithLabelValues(host, iface).Set(net.RxSpeed)
 		e.netTxSpeed.WithLabelValues(host, iface).Set(net.TxSpeed)
+	}
+}
+
+func (e *PrometheusExporter) recordCollectionState(host string, success bool, errs *model.CollectErrors, at time.Time) {
+	if at.Equal(e.lastObservedAt) {
+		return
+	}
+	e.lastObservedAt = at
+
+	if success {
+		e.lastCollectionError.WithLabelValues(host).Set(0)
+		e.lastSuccessTimestamp.WithLabelValues(host).Set(float64(at.UnixNano()) / float64(time.Second))
+	} else {
+		e.lastCollectionError.WithLabelValues(host).Set(1)
+	}
+
+	counts := []struct {
+		subsystem string
+		count     int
+	}{
+		{subsystem: "context"},
+		{subsystem: "cpu"},
+		{subsystem: "memory"},
+		{subsystem: "disk"},
+		{subsystem: "network"},
+	}
+	if errs != nil {
+		counts[0].count = len(errs.Context)
+		counts[1].count = len(errs.CPU)
+		counts[2].count = len(errs.Mem)
+		counts[3].count = len(errs.Disk)
+		counts[4].count = len(errs.Net)
+	}
+	for _, item := range counts {
+		e.collectionErrors.WithLabelValues(host, item.subsystem).Add(float64(item.count))
 	}
 }

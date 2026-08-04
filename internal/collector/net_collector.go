@@ -13,6 +13,14 @@ func CollectNetinfo(ctx context.Context) ([]model.NetStat, error) {
 }
 
 func collectNetinfo(ctx context.Context, sampler *netSampler) ([]model.NetStat, error) {
+	return collectNetinfoWithReader(ctx, sampler, readNetSnapshotWithContext)
+}
+
+func collectNetinfoWithReader(
+	ctx context.Context,
+	sampler *netSampler,
+	readSnapshot func(context.Context) ([]netSnapshot, error),
+) ([]model.NetStat, error) {
 	// 尝试从环形缓存读取
 	var snap0, snap1 []netSnapshot
 	var t0, t1 time.Time
@@ -29,7 +37,7 @@ func collectNetinfo(ctx context.Context, sampler *netSampler) ([]model.NetStat, 
 	}
 
 	// 缓存无效，回退到直接读取。保留合法网卡数据和聚合解析错误。
-	snapshots, err := readNetSnapshotWithContext(ctx)
+	snapshots, err := readSnapshot(ctx)
 	m := make([]model.NetStat, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		m = append(m, model.NetStat{
