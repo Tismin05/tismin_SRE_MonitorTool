@@ -110,10 +110,7 @@ func (s *cpuSampler) readSnapshot(ctx context.Context) (cpuCacheSnapshot, error)
 // 从环形缓冲区读取并计算 CPU 使用率（主流程调用）
 // 返回: perCPU使用率, 总tick, 空闲tick, 错误
 func (s *cpuSampler) usage() ([]float64, uint64, uint64, error) {
-	s.buffer.mu.RLock()
-	snap0 := s.buffer.snapshots[0]
-	snap1 := s.buffer.snapshots[1]
-	s.buffer.mu.RUnlock()
+	snap0, snap1 := s.snapshots()
 
 	// 检查是否有有效数据（至少一个非零时间戳）
 	if snap0.timestamp.IsZero() && snap1.timestamp.IsZero() {
@@ -170,4 +167,16 @@ func (s *cpuSampler) usage() ([]float64, uint64, uint64, error) {
 	}
 
 	return perCPUUsage, totalTicks, idleTicks, nil
+}
+
+func (s *cpuSampler) snapshots() (cpuCacheSnapshot, cpuCacheSnapshot) {
+	s.buffer.mu.RLock()
+	defer s.buffer.mu.RUnlock()
+	return cloneCPUCacheSnapshot(s.buffer.snapshots[0]), cloneCPUCacheSnapshot(s.buffer.snapshots[1])
+}
+
+func cloneCPUCacheSnapshot(src cpuCacheSnapshot) cpuCacheSnapshot {
+	dst := src
+	dst.perCPU = append([]cpuCacheSnapshot(nil), src.perCPU...)
+	return dst
 }
